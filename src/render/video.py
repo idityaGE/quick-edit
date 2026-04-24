@@ -21,6 +21,9 @@ from src.timeline.timeline import Timeline, Clip
 
 logger = logging.getLogger(__name__)
 
+# Threshold for switching render strategies
+CLIP_THRESHOLD_FOR_SEGMENT_RENDER = 50
+
 
 def render_video(
     timeline: Timeline,
@@ -31,13 +34,10 @@ def render_video(
     preset: str = "medium",
     audio_codec: str = "aac",
     audio_bitrate: str = "192k",
+    render_strategy: str = "auto",
 ) -> Path:
     """
     Render a Timeline to a video file using FFmpeg.
-
-    Strategy:
-    - For timelines with many clips: use filter_complex concat
-    - Burns in subtitles if subtitle_path is provided
 
     Args:
         timeline: Timeline with clips to render.
@@ -48,6 +48,9 @@ def render_video(
         preset: Encoding speed preset.
         audio_codec: Audio codec.
         audio_bitrate: Audio bitrate.
+        render_strategy: "auto" (default) - picks best strategy based on clip count
+                        "filter_complex" - single ffmpeg with filter_complex
+                        "segments" - render segments then concat
 
     Returns:
         Path to the output file.
@@ -70,7 +73,30 @@ def render_video(
             audio_bitrate,
         )
 
-    # Multiple clips: use concat filter
+    # Determine strategy
+    if render_strategy == "auto":
+        if len(timeline.clips) > CLIP_THRESHOLD_FOR_SEGMENT_RENDER:
+            logger.info(
+                f"Timeline has {len(timeline.clips)} clips (>{CLIP_THRESHOLD_FOR_SEGMENT_RENDER}), "
+                f"using segment-then-concat strategy"
+            )
+            render_strategy = "segments"
+        else:
+            render_strategy = "filter_complex"
+
+    if render_strategy == "segments":
+        return render_segments_then_concat(
+            timeline,
+            output_path,
+            subtitle_path,
+            codec,
+            crf,
+            preset,
+            audio_codec,
+            audio_bitrate,
+        )
+
+    # Default: filter_complex
     return _render_concat(
         timeline,
         output_path,

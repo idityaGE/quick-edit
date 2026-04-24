@@ -22,11 +22,11 @@ import numpy as np
 from src.analyze.vad import analyze_vad, get_video_info
 from src.analyze.motion import analyze_motion
 from src.analyze.transcribe import transcribe, TranscriptionResult, words_to_frame_array
-from src.analyze.combine import DetectionArrays, default_combine, evaluate_expression
+from src.analyze.combine import DetectionArrays, evaluate_expression
 from src.edit.margin import apply_margin_seconds
 from src.edit.smoothing import smooth_seconds
 from src.edit.llm import analyze_with_llm, SilentSegmentInfo
-from src.edit.edl import EditDecision, filter_by_confidence, decisions_to_frame_mask
+from src.edit.edl import EditDecision, filter_by_confidence
 from src.timeline.timeline import (
     Timeline,
     CutSegment,
@@ -95,6 +95,25 @@ class PipelineConfig:
     # Caching
     use_cache: bool = True
 
+    # Advanced: Motion detection (detailed)
+    motion_pixel_threshold: int = 10  # pixel change threshold for binary diff
+
+    # Advanced: Subtitles (detailed)
+    subtitle_silence_gap: float = 0.7  # gap between subtitle groups (seconds)
+
+    # Advanced: Cache
+    cache_hash_length: int = 32  # characters of hash for cache key
+
+    # Advanced: Silent segment classification
+    silent_segment_min_duration: float = 0.5  # minimum duration to classify
+
+    # Advanced: Motion detection performance
+    motion_frame_skip: int = 1  # 1 = all frames, 2 = every other, etc.
+
+    # Progress reporting
+    progress_callback: callable | None = None
+    # Signature: (step: str, progress: float 0-1, message: str) -> None
+
     # Misc
     verbose: bool = False
     dry_run: bool = False  # if True, analyze + build timeline but skip render
@@ -119,6 +138,29 @@ class PipelineResult:
             total = sum(self.timing.values())
             lines.append(f"  total: {total:.1f}s")
         return "\n".join(lines)
+
+
+def _validate_video_info(info: dict, input_path: Path) -> None:
+    """Validate video has expected properties for processing."""
+    if info.get("fps", 0) <= 0:
+        raise ValueError(f"Invalid FPS ({info.get('fps')}) for video: {input_path}")
+    if info.get("total_frames", 0) <= 0:
+        raise ValueError(f"Invalid frame count for video: {input_path}")
+    if not info.get("has_audio", True):  # Default True for backwards compat
+        logger.warning(
+            f"Video has no audio track: {input_path}. VAD will return empty."
+        )
+
+
+def _report_progress(
+    config: PipelineConfig,
+    step: str,
+    progress: float,
+    message: str = "",
+) -> None:
+    """Report progress if callback is set."""
+    if config.progress_callback:
+        config.progress_callback(step, progress, message)
 
 
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
@@ -152,6 +194,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     # --- Step 1: Video info ---
     logger.info("Getting video info...")
     info = get_video_info(input_path)
+    _validate_video_info(info, input_path)
     fps = info["fps"]
     duration = info["duration"]
     total_frames = info["total_frames"]
@@ -162,24 +205,31 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
 
     # --- Step 2: VAD ---
     t0 = time.time()
+    _report_progress(config, "vad", 0.0, "Starting voice activity detection")
     logger.info("Running voice activity detection...")
     speech_frames = _run_vad_cached(config, input_path, fps, total_frames)
     timing["vad"] = time.time() - t0
     speech_pct = np.mean(speech_frames) * 100
     logger.info(f"VAD: {speech_pct:.1f}% speech detected")
+    _report_progress(config, "vad", 1.0, f"{speech_pct:.1f}% speech detected")
 
     # --- Step 3: Motion detection ---
     t0 = time.time()
+    _report_progress(config, "motion", 0.0, "Starting motion detection")
     logger.info("Running motion detection...")
     motion_frames = _run_motion_cached(config, input_path, fps, total_frames)
     timing["motion"] = time.time() - t0
     motion_pct = np.mean(motion_frames) * 100
     logger.info(f"Motion: {motion_pct:.1f}% visual activity detected")
+    _report_progress(
+        config, "motion", 1.0, f"{motion_pct:.1f}% visual activity detected"
+    )
 
     # --- Step 4: Transcription ---
     t0 = time.time()
     transcript = None
     if config.use_llm or config.subtitle_style != "none":
+        _report_progress(config, "transcription", 0.0, "Starting transcription")
         logger.info(f"Transcribing with whisper model '{config.whisper_model}'...")
         transcript = _run_transcription_cached(config, input_path)
         timing["transcription"] = time.time() - t0
@@ -187,9 +237,13 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             f"Transcription: {len(transcript.words)} words, "
             f"language={transcript.language}"
         )
+        _report_progress(
+            config, "transcription", 1.0, f"{len(transcript.words)} words transcribed"
+        )
 
     # --- Step 5: Combine detection arrays ---
     t0 = time.time()
+    _report_progress(config, "combine", 0.0, "Combining detection arrays")
     logger.info(f"Combining detectors: {config.combine_expr}")
     detections = DetectionArrays(
         arrays={"speech": speech_frames, "motion": motion_frames},
@@ -381,6 +435,11 @@ def _run_vad_cached(
 
     # Ensure correct length
     if len(speech_frames) != total_frames:
+        logger.warning(
+            f"VAD returned {len(speech_frames)} frames, expected {total_frames}. "
+            f"Difference: {abs(len(speech_frames) - total_frames)} frames. "
+            f"Video may have variable frame rate."
+        )
         padded = np.zeros(total_frames, dtype=bool)
         n = min(len(speech_frames), total_frames)
         padded[:n] = speech_frames[:n]
@@ -420,6 +479,11 @@ def _run_motion_cached(
     motion_frames = result.activity_frames
 
     if len(motion_frames) != total_frames:
+        logger.warning(
+            f"Motion detection returned {len(motion_frames)} frames, expected {total_frames}. "
+            f"Difference: {abs(len(motion_frames) - total_frames)} frames. "
+            f"Video may have variable frame rate."
+        )
         padded = np.zeros(total_frames, dtype=bool)
         n = min(len(motion_frames), total_frames)
         padded[:n] = motion_frames[:n]

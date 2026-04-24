@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.analyze.transcribe import Word
-from src.timeline.timeline import Timeline, Clip
+from src.timeline.timeline import Timeline
 
 
 @dataclass
@@ -178,6 +178,7 @@ def _remap_words_to_output(
 def _group_words(
     words: list[_RemappedWord],
     max_per_group: int,
+    silence_gap: float = 0.7,
 ) -> list[list[_RemappedWord]]:
     """Group words into subtitle lines, respecting natural pauses."""
     if not words:
@@ -188,9 +189,9 @@ def _group_words(
 
     for word in words:
         if current_group:
-            # Check for a natural break (gap > 0.7s between words)
+            # Check for a natural break (gap > silence_gap between words)
             gap = word.start - current_group[-1].end
-            if gap > 0.7 or len(current_group) >= max_per_group:
+            if gap > silence_gap or len(current_group) >= max_per_group:
                 groups.append(current_group)
                 current_group = []
 
@@ -213,7 +214,6 @@ def _create_highlight_events(
     the entire group text but highlights the current word in a different color.
     """
     events = []
-    group_text_parts = [w.text for w in group]
 
     for i, word in enumerate(group):
         # Build the line with the current word highlighted

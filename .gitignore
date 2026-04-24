@@ -12,3 +12,5 @@ build/
 *.srt
 *.timeline.json
 .DS_Store
+.opencode/
+*.mkv

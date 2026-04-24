@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +34,9 @@ def get_cache_dir(video_path: str | Path) -> Path:
     return cache_dir
 
 
-def _cache_key(video_path: str | Path, method: str, params: dict) -> str:
+def _cache_key(
+    video_path: str | Path, method: str, params: dict, hash_length: int = 16
+) -> str:
     """
     Generate a cache key based on file identity and analysis parameters.
 
@@ -54,7 +55,7 @@ def _cache_key(video_path: str | Path, method: str, params: dict) -> str:
     }
 
     key_str = json.dumps(identity, sort_keys=True)
-    return hashlib.sha256(key_str.encode()).hexdigest()[:16]
+    return hashlib.sha256(key_str.encode()).hexdigest()[:hash_length]
 
 
 def save_array(

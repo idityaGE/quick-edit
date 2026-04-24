@@ -10,7 +10,6 @@ from __future__ import annotations
 import subprocess
 import json
 import tempfile
-import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,8 +128,10 @@ def read_wav_samples(wav_path: str | Path) -> np.ndarray:
     import wave
 
     with wave.open(str(wav_path), "rb") as wf:
-        assert wf.getnchannels() == 1, "Expected mono audio"
-        assert wf.getsampwidth() == 2, "Expected 16-bit audio"
+        if wf.getnchannels() != 1:
+            raise ValueError(f"Expected mono audio, got {wf.getnchannels()} channels")
+        if wf.getsampwidth() != 2:
+            raise ValueError(f"Expected 16-bit audio, got {wf.getsampwidth() * 8}-bit")
         n_frames = wf.getnframes()
         raw = wf.readframes(n_frames)
 

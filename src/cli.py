@@ -71,7 +71,9 @@ from src.pipeline import PipelineConfig, run_pipeline
 # LLM options
 @click.option("--no-llm", is_flag=True, help="Disable LLM semantic analysis")
 @click.option(
-    "--llm-model", default="claude-sonnet-4-20250514", help="Claude model to use"
+    "--llm-model",
+    default="claude-sonnet-4-20250514",
+    help="LLM model to use. Supports: claude-* (Anthropic), gemini-* (Google)",
 )
 @click.option(
     "--prompt",

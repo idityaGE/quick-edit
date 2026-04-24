@@ -36,6 +36,8 @@ def analyze_motion(
     threshold: float = 0.02,
     scale_width: int = 400,
     blur_sigma: int = 9,
+    frame_skip: int = 1,
+    progress_callback: callable | None = None,
 ) -> MotionResult:
     """
     Detect visual activity in a video using frame differencing.
@@ -52,6 +54,10 @@ def analyze_motion(
         threshold: Minimum motion fraction to count as "active" (default 2%).
         scale_width: Resize frames to this width before analysis.
         blur_sigma: Gaussian blur sigma for noise reduction.
+        frame_skip: Analyze every Nth frame. Default 1 (all frames).
+                    Set to 2-3 for faster processing on long videos.
+                    Intermediate frames are interpolated.
+        progress_callback: Optional callback(progress: float) called periodically.
 
     Returns:
         MotionResult with per-frame motion values and bool array.
@@ -65,13 +71,14 @@ def analyze_motion(
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    motion_values = np.zeros(total_frames, dtype=np.float32)
-    prev_gray = None
-
     # Gaussian kernel size must be odd
     ksize = blur_sigma * 2 + 1 if blur_sigma > 0 else 0
 
     log_interval = max(1, total_frames // 10)  # log every 10%
+
+    # Collect analyzed frames if using frame_skip
+    analyzed_frames: list[tuple[int, float]] = []
+    prev_gray = None
 
     frame_idx = 0
     while True:
@@ -82,11 +89,18 @@ def analyze_motion(
         if frame_idx >= total_frames:
             break
 
+        # Skip frames if frame_skip > 1
+        if frame_skip > 1 and frame_idx % frame_skip != 0:
+            frame_idx += 1
+            continue
+
         if frame_idx > 0 and frame_idx % log_interval == 0:
             pct = (frame_idx / total_frames) * 100
             logger.info(
                 f"  Motion analysis: {pct:.0f}% ({frame_idx}/{total_frames} frames)"
             )
+            if progress_callback:
+                progress_callback(frame_idx / total_frames)
 
         # 1. Resize (preserve aspect ratio)
         h, w = frame.shape[:2]
@@ -112,19 +126,27 @@ def analyze_motion(
             # Fraction of pixels that changed
             changed = np.count_nonzero(binary_diff)
             total = binary_diff.size
-            motion_values[frame_idx] = changed / total
+            motion_value = changed / total
         else:
             # First frame: no previous frame to compare
-            motion_values[frame_idx] = 0.0
+            motion_value = 0.0
 
+        analyzed_frames.append((frame_idx, motion_value))
         prev_gray = gray
         frame_idx += 1
 
     cap.release()
 
-    # Trim to actual frames read (video might have fewer frames than metadata says)
-    motion_values = motion_values[:frame_idx]
     actual_total = frame_idx
+
+    # Interpolate if we skipped frames
+    if frame_skip > 1:
+        motion_values = _interpolate_motion_values(analyzed_frames, actual_total)
+    else:
+        motion_values = np.zeros(actual_total, dtype=np.float32)
+        for idx, val in analyzed_frames:
+            if idx < actual_total:
+                motion_values[idx] = val
 
     # Apply threshold to get bool array
     activity_frames = motion_values >= threshold
@@ -135,6 +157,36 @@ def analyze_motion(
         fps=fps,
         total_frames=actual_total,
     )
+
+
+def _interpolate_motion_values(
+    analyzed: list[tuple[int, float]],
+    total_frames: int,
+) -> np.ndarray:
+    """Interpolate motion values for skipped frames."""
+    motion_values = np.zeros(total_frames, dtype=np.float32)
+
+    if not analyzed:
+        return motion_values
+
+    for i, (frame_idx, value) in enumerate(analyzed):
+        if frame_idx < total_frames:
+            motion_values[frame_idx] = value
+
+        # Linear interpolation to next analyzed frame
+        if i < len(analyzed) - 1:
+            next_idx, next_value = analyzed[i + 1]
+            for j in range(frame_idx + 1, min(next_idx, total_frames)):
+                t = (j - frame_idx) / (next_idx - frame_idx)
+                motion_values[j] = value + t * (next_value - value)
+
+    # Fill remaining frames after last analyzed frame with last value
+    if analyzed:
+        last_idx, last_value = analyzed[-1]
+        for j in range(last_idx + 1, total_frames):
+            motion_values[j] = last_value
+
+    return motion_values
 
 
 def analyze_motion_region(
