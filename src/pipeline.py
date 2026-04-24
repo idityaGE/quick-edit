@@ -301,6 +301,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             motion_frames,
             fps,
             config.motion_threshold,
+            min_duration=config.silent_segment_min_duration,
         )
 
         llm_decisions = analyze_with_llm(
@@ -354,6 +355,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                 timeline,
                 subtitle_path,
                 style,
+                silence_gap=config.subtitle_silence_gap,
             )
         else:
             sub_ext = ".srt"
@@ -362,6 +364,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                 transcript.words,
                 timeline,
                 subtitle_path,
+                silence_gap=config.subtitle_silence_gap,
             )
 
         timing["subtitles"] = time.time() - t0
@@ -425,7 +428,7 @@ def _run_vad_cached(
     params = {"threshold": config.vad_threshold}
 
     if config.use_cache:
-        cached = cache.load_array(input_path, "vad", params)
+        cached = cache.load_array(input_path, "vad", params, config.cache_hash_length)
         if cached is not None:
             logger.info("Using cached VAD result")
             return cached
@@ -446,7 +449,7 @@ def _run_vad_cached(
         speech_frames = padded
 
     if config.use_cache:
-        cache.save_array(input_path, "vad", params, speech_frames)
+        cache.save_array(input_path, "vad", params, speech_frames, config.cache_hash_length)
 
     return speech_frames
 
@@ -462,10 +465,12 @@ def _run_motion_cached(
         "threshold": config.motion_threshold,
         "scale_width": config.motion_scale_width,
         "blur_sigma": config.motion_blur_sigma,
+        "pixel_threshold": config.motion_pixel_threshold,
+        "frame_skip": config.motion_frame_skip,
     }
 
     if config.use_cache:
-        cached = cache.load_array(input_path, "motion", params)
+        cached = cache.load_array(input_path, "motion", params, config.cache_hash_length)
         if cached is not None:
             logger.info("Using cached motion result")
             return cached
@@ -475,6 +480,7 @@ def _run_motion_cached(
         threshold=config.motion_threshold,
         scale_width=config.motion_scale_width,
         blur_sigma=config.motion_blur_sigma,
+        frame_skip=config.motion_frame_skip,
     )
     motion_frames = result.activity_frames
 
@@ -490,7 +496,7 @@ def _run_motion_cached(
         motion_frames = padded
 
     if config.use_cache:
-        cache.save_array(input_path, "motion", params, motion_frames)
+        cache.save_array(input_path, "motion", params, motion_frames, config.cache_hash_length)
 
     return motion_frames
 
@@ -506,7 +512,7 @@ def _run_transcription_cached(
     }
 
     if config.use_cache:
-        cached = cache.load_json(input_path, "transcription", params)
+        cached = cache.load_json(input_path, "transcription", params, config.cache_hash_length)
         if cached is not None:
             logger.info("Using cached transcription")
             return _json_to_transcription(cached)
@@ -521,7 +527,8 @@ def _run_transcription_cached(
 
     if config.use_cache:
         cache.save_json(
-            input_path, "transcription", params, _transcription_to_json(result)
+            input_path, "transcription", params, _transcription_to_json(result),
+            config.cache_hash_length,
         )
 
     return result
@@ -611,6 +618,7 @@ def _classify_silent_segments(
     motion_frames: np.ndarray,
     fps: float,
     motion_threshold: float,
+    min_duration: float = 0.5,
 ) -> list[SilentSegmentInfo]:
     """
     Classify silent segments as having visual activity or being dead air.
@@ -625,9 +633,9 @@ def _classify_silent_segments(
 
     segments = []
     for start_frame, end_frame in zip(silence_starts, silence_ends):
-        # Only classify segments longer than 0.5s
+        # Only classify segments longer than min_duration
         duration = (end_frame - start_frame) / fps
-        if duration < 0.5:
+        if duration < min_duration:
             continue
 
         # Check motion in this range

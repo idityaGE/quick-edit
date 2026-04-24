@@ -63,10 +63,11 @@ def save_array(
     method: str,
     params: dict,
     array: np.ndarray,
+    hash_length: int = 16,
 ) -> None:
     """Save a numpy array to cache."""
     cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
+    key = _cache_key(video_path, method, params, hash_length)
     cache_file = cache_dir / f"{method}_{key}.npz"
 
     np.savez_compressed(cache_file, data=array)
@@ -77,10 +78,11 @@ def load_array(
     video_path: str | Path,
     method: str,
     params: dict,
+    hash_length: int = 16,
 ) -> np.ndarray | None:
     """Load a cached numpy array. Returns None if not cached."""
     cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
+    key = _cache_key(video_path, method, params, hash_length)
     cache_file = cache_dir / f"{method}_{key}.npz"
 
     if not cache_file.exists():
@@ -100,10 +102,11 @@ def save_json(
     method: str,
     params: dict,
     data: Any,
+    hash_length: int = 16,
 ) -> None:
     """Save JSON-serializable data to cache."""
     cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
+    key = _cache_key(video_path, method, params, hash_length)
     cache_file = cache_dir / f"{method}_{key}.json"
 
     cache_file.write_text(json.dumps(data, indent=2, default=str))
@@ -114,10 +117,11 @@ def load_json(
     video_path: str | Path,
     method: str,
     params: dict,
+    hash_length: int = 16,
 ) -> Any | None:
     """Load cached JSON data. Returns None if not cached."""
     cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
+    key = _cache_key(video_path, method, params, hash_length)
     cache_file = cache_dir / f"{method}_{key}.json"
 
     if not cache_file.exists():

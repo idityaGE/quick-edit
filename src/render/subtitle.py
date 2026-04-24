@@ -41,6 +41,7 @@ def generate_ass_subtitles(
     timeline: Timeline,
     output_path: str | Path,
     style: SubtitleStyle | None = None,
+    silence_gap: float = 0.7,
 ) -> Path:
     """
     Generate ASS subtitles with word-by-word highlighting.
@@ -72,7 +73,7 @@ def generate_ass_subtitles(
         return output_path
 
     # Group words into lines
-    groups = _group_words(remapped_words, style.max_words_per_line)
+    groups = _group_words(remapped_words, style.max_words_per_line, silence_gap)
 
     # Generate ASS dialogue events with highlight
     events = []
@@ -89,6 +90,7 @@ def generate_srt_subtitles(
     timeline: Timeline,
     output_path: str | Path,
     max_words_per_line: int = 10,
+    silence_gap: float = 0.7,
 ) -> Path:
     """
     Generate simple SRT subtitles.
@@ -98,6 +100,7 @@ def generate_srt_subtitles(
         timeline: Edit timeline for timestamp remapping.
         output_path: Where to write the .srt file.
         max_words_per_line: Words per subtitle entry.
+        silence_gap: Gap (seconds) between words that starts a new subtitle group.
 
     Returns:
         Path to the generated .srt file.
@@ -109,7 +112,7 @@ def generate_srt_subtitles(
         output_path.write_text("")
         return output_path
 
-    groups = _group_words(remapped_words, max_words_per_line)
+    groups = _group_words(remapped_words, max_words_per_line, silence_gap)
 
     lines = []
     for i, group in enumerate(groups, 1):
