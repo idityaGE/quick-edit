@@ -231,18 +231,16 @@ def merge_timelines(base: Timeline, llm_cuts: list[CutSegment]) -> Timeline:
     llm_cuts = sorted(llm_cuts, key=lambda c: c.src_start)
 
     new_clips: list[Clip] = []
-    cut_idx = 0
 
     for clip in base.clips:
-        # Collect all LLM cuts that fall within this clip
-        relevant_cuts = []
-        while cut_idx < len(llm_cuts):
-            cut = llm_cuts[cut_idx]
-            if cut.src_start >= clip.src_end:
-                break  # past this clip
-            if cut.src_end > clip.src_start:
-                relevant_cuts.append(cut)
-            cut_idx += 1
+        # Collect all LLM cuts that overlap with this clip.
+        # We scan from the beginning each time since a cut can span
+        # multiple clips, and a per-clip scan is fast for typical counts.
+        relevant_cuts = [
+            cut
+            for cut in llm_cuts
+            if cut.src_end > clip.src_start and cut.src_start < clip.src_end
+        ]
 
         if not relevant_cuts:
             new_clips.append(clip)

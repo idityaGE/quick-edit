@@ -44,6 +44,46 @@ def _load_config_callback(ctx: click.Context, param: click.Parameter, value: str
     return value
 
 
+def _validate_config(config: PipelineConfig) -> None:
+    """Validate configuration values and raise ValueError on invalid input."""
+    errors: list[str] = []
+
+    # Range validations
+    if not 0.0 <= config.vad_threshold <= 1.0:
+        errors.append(f"vad_threshold must be 0.0-1.0, got {config.vad_threshold}")
+    if not 0.0 <= config.motion_threshold <= 1.0:
+        errors.append(f"motion_threshold must be 0.0-1.0, got {config.motion_threshold}")
+    if not 0 <= config.motion_pixel_threshold <= 255:
+        errors.append(f"motion_pixel_threshold must be 0-255, got {config.motion_pixel_threshold}")
+    if config.motion_frame_skip < 1:
+        errors.append(f"motion_frame_skip must be >= 1, got {config.motion_frame_skip}")
+    if config.margin < 0:
+        errors.append(f"margin must be >= 0, got {config.margin}")
+    if config.minclip < 0:
+        errors.append(f"minclip must be >= 0, got {config.minclip}")
+    if config.mincut < 0:
+        errors.append(f"mincut must be >= 0, got {config.mincut}")
+    if not 0.0 <= config.confidence <= 1.0:
+        errors.append(f"confidence must be 0.0-1.0, got {config.confidence}")
+    if config.silent_segment_min_duration < 0:
+        errors.append(f"silent_segment_min_duration must be >= 0, got {config.silent_segment_min_duration}")
+    if config.subtitle_size < 1:
+        errors.append(f"subtitle_size must be >= 1, got {config.subtitle_size}")
+    if config.subtitle_silence_gap < 0:
+        errors.append(f"subtitle_silence_gap must be >= 0, got {config.subtitle_silence_gap}")
+    if not 0 <= config.crf <= 51:
+        errors.append(f"crf must be 0-51, got {config.crf}")
+
+    # Output path validation
+    input_path = Path(config.input_path).resolve()
+    output_path = Path(config.output_path).resolve() if config.output_path else None
+    if output_path and input_path == output_path:
+        errors.append("Output path cannot be the same as input path")
+
+    if errors:
+        raise ValueError("Configuration errors:\n  " + "\n  ".join(errors))
+
+
 @click.command(context_settings={"auto_envvar_prefix": "QUICKEDIT"})
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option(
@@ -313,6 +353,13 @@ def main(
         dry_run=dry_run,
         verbose=verbose,
     )
+
+    # Validate configuration before running
+    try:
+        _validate_config(config)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     # Run
     click.echo("QuickEdit - AI Video Editor")

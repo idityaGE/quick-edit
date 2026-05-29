@@ -218,6 +218,9 @@ async def analyze_with_llm_async(
     return _deduplicate_decisions(all_decisions)
 
 
+LLM_PROVIDER_TIMEOUT_SECONDS = 300  # 5 minutes per API call
+
+
 async def _create_anthropic_chunk_processor(
     model: str,
     api_key: str | None,
@@ -229,7 +232,7 @@ async def _create_anthropic_chunk_processor(
     """Create an async chunk processor for Anthropic."""
     from anthropic import AsyncAnthropic
 
-    client = AsyncAnthropic(api_key=api_key)
+    client = AsyncAnthropic(api_key=api_key, timeout=LLM_PROVIDER_TIMEOUT_SECONDS)
 
     async def process_chunk(i: int, chunk: list[dict]) -> list[EditDecision]:
         async with semaphore:
@@ -292,6 +295,7 @@ async def _create_gemini_chunk_processor(
                     max_output_tokens=4096,
                     response_mime_type="application/json",
                 ),
+                request_options={"timeout": LLM_PROVIDER_TIMEOUT_SECONDS},
             )
             return _parse_llm_response(response.text)
 
@@ -397,7 +401,7 @@ def _analyze_with_llm_sync(
     else:
         from anthropic import Anthropic
 
-        client = Anthropic(api_key=api_key)
+        client = Anthropic(api_key=api_key, timeout=LLM_PROVIDER_TIMEOUT_SECONDS)
 
     for i, chunk in enumerate(chunks):
         if not chunk:
@@ -418,6 +422,7 @@ def _analyze_with_llm_sync(
                     max_output_tokens=4096,
                     response_mime_type="application/json",
                 ),
+                request_options={"timeout": LLM_PROVIDER_TIMEOUT_SECONDS},
             )
             response_text = response.text
         else:

@@ -134,7 +134,7 @@ def _render_single_clip(
     vf_filters = []
     if subtitle_path:
         # Burn in subtitles
-        sub_path = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+        sub_path = _escape_subtitle_path(str(subtitle_path))
         vf_filters.append(f"subtitles='{sub_path}'")
 
     if vf_filters:
@@ -214,7 +214,7 @@ def _render_concat(
     if subtitle_path:
         # We need to apply subtitles after concat
         # Modify the last filter to pipe through subtitles
-        sub_path = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+        sub_path = _escape_subtitle_path(str(subtitle_path))
         # Replace [outv] with subtitle filter
         filter_complex = filter_complex.replace(
             f"concat=n={n}:v=1:a=1[outv][outa]",
@@ -322,7 +322,7 @@ def render_segments_then_concat(
 
         # Step 3: Add subtitles if needed (requires re-encoding video)
         if subtitle_path:
-            sub_path = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+            sub_path = _escape_subtitle_path(str(subtitle_path))
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -353,6 +353,22 @@ def render_segments_then_concat(
     return output_path
 
 
+FFMPEG_TIMEOUT_SECONDS = 3600  # 1 hour max for long renders
+
+
+def _escape_subtitle_path(path: str) -> str:
+    """Escape a file path for FFmpeg's subtitles filter.
+
+    FFmpeg subtitles filter uses ':' as option separator, so colons in paths
+    (e.g. Windows drive letters) must be escaped as '\\:'. Single quotes
+    in paths are also escaped.
+    """
+    path = path.replace("\\", "/")
+    path = path.replace(":", "\\:")
+    path = path.replace("'", "'\\\\''")
+    return path
+
+
 def _run_ffmpeg(cmd: list[str], quiet: bool = False) -> subprocess.CompletedProcess:
     """Run an FFmpeg command and handle errors."""
     if not quiet:
@@ -362,6 +378,7 @@ def _run_ffmpeg(cmd: list[str], quiet: bool = False) -> subprocess.CompletedProc
         cmd,
         capture_output=True,
         text=True,
+        timeout=FFMPEG_TIMEOUT_SECONDS,
     )
 
     if result.returncode != 0:

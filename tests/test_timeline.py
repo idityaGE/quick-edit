@@ -353,6 +353,41 @@ class TestMergeTimelines:
             assert clip.dst_start == cursor
             cursor += clip.duration
 
+    def test_merge_timelines_cut_spans_multiple_clips(self):
+        """A single LLM cut that spans multiple clips affects all of them."""
+        # Build a timeline with two clips separated by a gap
+        base = Timeline(
+            source="/test.mp4",
+            fps=30.0,
+            duration=20.0,
+            clips=[
+                Clip(source="/test.mp4", src_start=0.0, src_end=5.0, dst_start=0.0, duration=5.0),
+                Clip(source="/test.mp4", src_start=10.0, src_end=15.0, dst_start=5.0, duration=5.0),
+            ],
+            cuts=[
+                CutSegment(src_start=5.0, src_end=10.0, reason="silence"),
+            ],
+        )
+
+        # LLM cut spans from inside first clip through the gap and into second clip
+        llm_cuts = [
+            CutSegment(src_start=3.0, src_end=12.0, reason="tangent"),
+        ]
+
+        result = merge_timelines(base, llm_cuts)
+
+        # First clip: 0-5s cut by 3-12s → keep 0-3s
+        # Second clip: 10-15s cut by 3-12s → keep 12-15s
+        assert len(result.clips) == 2
+        assert result.clips[0].src_start == 0.0
+        assert result.clips[0].src_end == 3.0
+        assert result.clips[1].src_start == 12.0
+        assert result.clips[1].src_end == 15.0
+
+        # dst_start should be sequential
+        assert result.clips[0].dst_start == 0.0
+        assert result.clips[1].dst_start == 3.0
+
 
 class TestFormatTime:
     """Tests for the _fmt_time() helper."""
