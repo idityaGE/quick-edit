@@ -73,6 +73,7 @@ def transcribe(
     language: str | None = None,
     vad_filter: bool = True,
     beam_size: int = 5,
+    progress_callback: callable | None = None,
 ) -> TranscriptionResult:
     """
     Transcribe a video file using faster-whisper.
@@ -87,17 +88,24 @@ def transcribe(
         language: Language code (e.g., "en"). None for auto-detect.
         vad_filter: Use Silero VAD to skip silence (recommended).
         beam_size: Beam search width.
+        progress_callback: Optional callback(step, progress, message).
 
     Returns:
         TranscriptionResult with word-level timestamps.
     """
     from faster_whisper import WhisperModel
 
+    if progress_callback:
+        progress_callback("transcription", 0.1, "Loading whisper model...")
+
     model = WhisperModel(
         model_size,
         device=device,
         compute_type=compute_type,
     )
+
+    if progress_callback:
+        progress_callback("transcription", 0.3, "Transcribing audio...")
 
     segments_iter, info = model.transcribe(
         str(video_path),
@@ -109,13 +117,20 @@ def transcribe(
             speech_pad_ms=200,
         ),
         language=language,
+        condition_on_previous_text=False,
     )
 
     segments: list[Segment] = []
     all_words: list[Word] = []
     full_text_parts: list[str] = []
+    segment_count = 0
 
     for seg in segments_iter:
+        segment_count += 1
+        if progress_callback and segment_count % 10 == 0:
+            progress_callback(
+                "transcription", 0.3 + min(0.6, segment_count / 100), f"Processed {segment_count} segments..."
+            )
         words: list[Word] = []
         if seg.words:
             for w in seg.words:
@@ -136,6 +151,9 @@ def transcribe(
         )
         segments.append(segment)
         full_text_parts.append(seg.text.strip())
+
+    if progress_callback:
+        progress_callback("transcription", 0.95, f"Transcription complete: {len(all_words)} words")
 
     return TranscriptionResult(
         segments=segments,

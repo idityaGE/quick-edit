@@ -37,6 +37,7 @@ def analyze_motion(
     scale_width: int = 400,
     blur_sigma: int = 9,
     frame_skip: int = 1,
+    pixel_threshold: int = 10,
     progress_callback: callable | None = None,
 ) -> MotionResult:
     """
@@ -57,6 +58,7 @@ def analyze_motion(
         frame_skip: Analyze every Nth frame. Default 1 (all frames).
                     Set to 2-3 for faster processing on long videos.
                     Intermediate frames are interpolated.
+        pixel_threshold: Minimum pixel brightness change (0-255) to count as changed.
         progress_callback: Optional callback(progress: float) called periodically.
 
     Returns:
@@ -121,8 +123,8 @@ def analyze_motion(
         if prev_gray is not None:
             # Absolute difference
             diff = cv2.absdiff(gray, prev_gray)
-            # Threshold: any pixel change > 10 counts as "changed"
-            _, binary_diff = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
+            # Threshold: any pixel change >= pixel_threshold counts as "changed"
+            _, binary_diff = cv2.threshold(diff, pixel_threshold, 255, cv2.THRESH_BINARY)
             # Fraction of pixels that changed
             changed = np.count_nonzero(binary_diff)
             total = binary_diff.size
@@ -208,7 +210,7 @@ def analyze_motion_region(
         Other args same as analyze_motion.
     """
     if region is None:
-        return analyze_motion(video_path, threshold, scale_width, blur_sigma)
+        return analyze_motion(video_path, threshold, scale_width, blur_sigma, pixel_threshold=10)
 
     rx, ry, rw, rh = region
     video_path = str(video_path)
