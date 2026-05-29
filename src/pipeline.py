@@ -211,7 +211,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     timing["vad"] = time.time() - t0
     speech_pct = np.mean(speech_frames) * 100
     logger.info(f"VAD: {speech_pct:.1f}% speech detected")
-    _report_progress(config, "vad", 1.0, f"{speech_pct:.1f}% speech detected")
+    _report_progress(config, "vad", 1.0, f"{speech_pct:.1f}% speech — {timing['vad']:.1f}s")
 
     # --- Step 3: Motion detection ---
     t0 = time.time()
@@ -222,7 +222,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     motion_pct = np.mean(motion_frames) * 100
     logger.info(f"Motion: {motion_pct:.1f}% visual activity detected")
     _report_progress(
-        config, "motion", 1.0, f"{motion_pct:.1f}% visual activity detected"
+        config, "motion", 1.0, f"{motion_pct:.1f}% activity — {timing['motion']:.1f}s"
     )
 
     # --- Step 4: Transcription ---
@@ -238,7 +238,8 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             f"language={transcript.language}"
         )
         _report_progress(
-            config, "transcription", 1.0, f"{len(transcript.words)} words transcribed"
+            config, "transcription", 1.0,
+            f"{len(transcript.words)} words — {timing['transcription']:.1f}s"
         )
 
     # --- Step 5: Combine detection arrays ---
@@ -256,8 +257,10 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         word_frames = words_to_frame_array(transcript.words, fps, total_frames)
         detections.add("words", word_frames)
 
+    _report_progress(config, "combine", 0.5, "Evaluating expression")
     keep_frames = evaluate_expression(config.combine_expr, detections)
     timing["combine"] = time.time() - t0
+    _report_progress(config, "combine", 1.0, f"Done — {timing['combine']:.1f}s")
 
     # --- Step 6: Margin + Smoothing ---
     t0 = time.time()
@@ -292,9 +295,11 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     llm_decisions: list[EditDecision] = []
     if config.use_llm and transcript:
         t0 = time.time()
+        _report_progress(config, "llm", 0.0, "Starting LLM analysis")
         logger.info("Running LLM semantic analysis...")
 
         # Classify silent segments for the LLM
+        _report_progress(config, "llm", 0.1, "Classifying silent segments")
         silent_info = _classify_silent_segments(
             keep_frames,
             speech_frames,
@@ -304,6 +309,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             min_duration=config.silent_segment_min_duration,
         )
 
+        _report_progress(config, "llm", 0.2, "Sending to LLM...")
         llm_decisions = analyze_with_llm(
             transcript=transcript,
             silent_segments=silent_info,
@@ -312,6 +318,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             model=config.llm_model,
         )
 
+        _report_progress(config, "llm", 0.8, "Filtering by confidence")
         # Filter by confidence
         llm_decisions = filter_by_confidence(
             llm_decisions,
@@ -320,6 +327,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
 
         timing["llm"] = time.time() - t0
         logger.info(f"LLM suggested {len(llm_decisions)} cuts")
+        _report_progress(config, "llm", 1.0, f"{len(llm_decisions)} cuts — {timing['llm']:.1f}s")
 
         # Apply LLM cuts to timeline
         if llm_decisions:
@@ -339,6 +347,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     subtitle_path = None
     if transcript and config.subtitle_style != "none":
         t0 = time.time()
+        _report_progress(config, "subtitles", 0.0, "Generating subtitles")
         logger.info("Generating subtitles...")
 
         if config.subtitle_style == "fancy":
@@ -350,6 +359,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                 primary_color=config.subtitle_color,
                 highlight_color=config.subtitle_highlight,
             )
+            _report_progress(config, "subtitles", 0.3, "Writing ASS subtitles")
             generate_ass_subtitles(
                 transcript.words,
                 timeline,
@@ -360,6 +370,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         else:
             sub_ext = ".srt"
             subtitle_path = Path(output_path).with_suffix(sub_ext)
+            _report_progress(config, "subtitles", 0.3, "Writing SRT subtitles")
             generate_srt_subtitles(
                 transcript.words,
                 timeline,
@@ -369,6 +380,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
 
         timing["subtitles"] = time.time() - t0
         logger.info(f"Subtitles written to {subtitle_path}")
+        _report_progress(config, "subtitles", 1.0, f"Written — {timing['subtitles']:.1f}s")
 
     # Save timeline JSON alongside output
     timeline_path = Path(output_path).with_suffix(".timeline.json")
@@ -392,6 +404,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             )
     else:
         t0 = time.time()
+        _report_progress(config, "render", 0.0, "Starting FFmpeg render")
         logger.info("Rendering final video...")
         render_video(
             timeline=timeline,
@@ -405,6 +418,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         )
         timing["render"] = time.time() - t0
         logger.info(f"Output written to {output_path}")
+        _report_progress(config, "render", 1.0, f"Done — {timing['render']:.1f}s")
 
     return PipelineResult(
         output_path=output_path,
@@ -428,7 +442,7 @@ def _run_vad_cached(
     params = {"threshold": config.vad_threshold}
 
     if config.use_cache:
-        cached = cache.load_array(input_path, "vad", params, config.cache_hash_length)
+        cached = cache.load_array(input_path, "vad", params)
         if cached is not None:
             logger.info("Using cached VAD result")
             return cached
@@ -449,7 +463,7 @@ def _run_vad_cached(
         speech_frames = padded
 
     if config.use_cache:
-        cache.save_array(input_path, "vad", params, speech_frames, config.cache_hash_length)
+        cache.save_array(input_path, "vad", params, speech_frames)
 
     return speech_frames
 
@@ -470,7 +484,7 @@ def _run_motion_cached(
     }
 
     if config.use_cache:
-        cached = cache.load_array(input_path, "motion", params, config.cache_hash_length)
+        cached = cache.load_array(input_path, "motion", params)
         if cached is not None:
             logger.info("Using cached motion result")
             return cached
@@ -481,6 +495,8 @@ def _run_motion_cached(
         scale_width=config.motion_scale_width,
         blur_sigma=config.motion_blur_sigma,
         frame_skip=config.motion_frame_skip,
+        pixel_threshold=config.motion_pixel_threshold,
+        progress_callback=lambda p: _report_progress(config, "motion", p * 0.9, f"Analyzing frames... {p*100:.0f}%"),
     )
     motion_frames = result.activity_frames
 
@@ -496,7 +512,7 @@ def _run_motion_cached(
         motion_frames = padded
 
     if config.use_cache:
-        cache.save_array(input_path, "motion", params, motion_frames, config.cache_hash_length)
+        cache.save_array(input_path, "motion", params, motion_frames)
 
     return motion_frames
 
@@ -512,7 +528,7 @@ def _run_transcription_cached(
     }
 
     if config.use_cache:
-        cached = cache.load_json(input_path, "transcription", params, config.cache_hash_length)
+        cached = cache.load_json(input_path, "transcription", params)
         if cached is not None:
             logger.info("Using cached transcription")
             return _json_to_transcription(cached)
@@ -523,12 +539,12 @@ def _run_transcription_cached(
         device=config.whisper_device,
         compute_type=config.whisper_compute_type,
         language=config.whisper_language,
+        progress_callback=lambda step, prog, msg: _report_progress(config, step, prog, msg),
     )
 
     if config.use_cache:
         cache.save_json(
-            input_path, "transcription", params, _transcription_to_json(result),
-            config.cache_hash_length,
+            input_path, "transcription", params, _transcription_to_json(result)
         )
 
     return result

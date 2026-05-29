@@ -42,12 +42,6 @@ def _detect_provider(model: str) -> LLMProvider:
     return LLMProvider.ANTHROPIC
 
 
-# Default models for each provider
-DEFAULT_MODELS = {
-    LLMProvider.ANTHROPIC: "claude-sonnet-4-20250514",
-    LLMProvider.GEMINI: "gemini-2.0-flash",
-}
-
 # Maximum words to send per LLM chunk to stay within context limits
 CHUNK_SIZE_WORDS = 3000
 CHUNK_OVERLAP_WORDS = 200
@@ -316,6 +310,19 @@ def _build_silent_info(silent_segments: list[SilentSegmentInfo] | None) -> str:
     return "Silent segment classifications:\n" + "\n".join(silent_lines)
 
 
+def _get_running_loop():
+    """Return the running asyncio event loop, or None if there isn't one.
+
+    This replaces the fragile try/except RuntimeError pattern that breaks
+    in Jupyter and catches unrelated RuntimeErrors.
+    """
+    import asyncio
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def analyze_with_llm(
     transcript: TranscriptionResult,
     silent_segments: list[SilentSegmentInfo] | None = None,
@@ -339,18 +346,26 @@ def analyze_with_llm(
         List of EditDecision objects for segments to remove.
     """
     import asyncio
+    import concurrent.futures
 
-    # Use async version for parallel processing
-    try:
-        # Try to get running loop (e.g., in Jupyter or async context)
-        asyncio.get_running_loop()
-        # If we're in an async context, we can't use asyncio.run
-        # Fall back to sync implementation
-        return _analyze_with_llm_sync(
-            transcript, silent_segments, custom_prompt, api_key, model
-        )
-    except RuntimeError:
-        # No running loop, we can use asyncio.run
+    # Detect running event loop without fragile try/except RuntimeError.
+    # asyncio.get_running_loop() raises RuntimeError when no loop exists,
+    # but we isolate that to a narrow, purpose-built helper.
+    running_loop = _get_running_loop()
+
+    if running_loop is not None:
+        # Inside an async context (e.g., Jupyter notebook).
+        # Run in a separate thread so we get our own event loop and keep
+        # the parallel chunk processing that analyze_with_llm_async provides.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                analyze_with_llm_async(
+                    transcript, silent_segments, custom_prompt, api_key, model
+                ),
+            )
+            return future.result()
+    else:
         return asyncio.run(
             analyze_with_llm_async(
                 transcript, silent_segments, custom_prompt, api_key, model
