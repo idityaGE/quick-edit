@@ -51,30 +51,6 @@ def extract_audio(
     return output_path
 
 
-def get_video_fps(video_path: str | Path) -> float:
-    """Get the frame rate of a video file."""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=r_frame_rate",
-        "-of",
-        "json",
-        str(video_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFprobe failed: {result.stderr}")
-
-    data = json.loads(result.stdout)
-    rate_str = data["streams"][0]["r_frame_rate"]
-    num, den = map(int, rate_str.split("/"))
-    return num / den
-
-
 def get_video_info(video_path: str | Path) -> dict:
     """Get video metadata: fps, duration, total_frames, width, height."""
     cmd = [
@@ -84,7 +60,7 @@ def get_video_info(video_path: str | Path) -> dict:
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=r_frame_rate,duration,nb_frames,width,height",
+        "stream=r_frame_rate,avg_frame_rate,duration,nb_frames,width,height",
         "-show_entries",
         "format=duration",
         "-of",
@@ -98,9 +74,36 @@ def get_video_info(video_path: str | Path) -> dict:
     data = json.loads(result.stdout)
     stream = data["streams"][0]
 
-    rate_str = stream["r_frame_rate"]
-    num, den = map(int, rate_str.split("/"))
-    fps = num / den
+    # Parse r_frame_rate
+    r_fps = 0.0
+    rate_str = stream.get("r_frame_rate")
+    if rate_str:
+        try:
+            num, den = map(int, rate_str.split("/"))
+            if den > 0:
+                r_fps = num / den
+        except (ValueError, ZeroDivisionError):
+            pass
+
+    # Parse avg_frame_rate
+    avg_fps = 0.0
+    avg_rate_str = stream.get("avg_frame_rate")
+    if avg_rate_str:
+        try:
+            num, den = map(int, avg_rate_str.split("/"))
+            if den > 0:
+                avg_fps = num / den
+        except (ValueError, ZeroDivisionError):
+            pass
+
+    # Choose best FPS: prefer avg_fps if r_fps is unusually high (e.g. VFR/timebase) or 0
+    if avg_fps > 0:
+        if r_fps > 120.0 or r_fps <= 0.0 or abs(r_fps - avg_fps) > 5.0:
+            fps = avg_fps
+        else:
+            fps = r_fps
+    else:
+        fps = r_fps if r_fps > 0 else 30.0  # fallback to 30 if both invalid
 
     # Duration from stream or format
     duration = float(stream.get("duration", 0))

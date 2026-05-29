@@ -469,7 +469,7 @@ def _run_vad_cached(
     total_frames: int,
 ) -> np.ndarray:
     """Run VAD with caching."""
-    params = {"threshold": config.vad_threshold}
+    params = {"threshold": config.vad_threshold, "fps": round(fps, 4)}
 
     if config.use_cache:
         cached = cache.load_array(input_path, "vad", params)
@@ -511,6 +511,7 @@ def _run_motion_cached(
         "blur_sigma": config.motion_blur_sigma,
         "pixel_threshold": config.motion_pixel_threshold,
         "frame_skip": config.motion_frame_skip,
+        "fps": round(fps, 4),
     }
 
     if config.use_cache:
