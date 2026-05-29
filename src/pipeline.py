@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -203,43 +204,72 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         f"{info['width']}x{info['height']}"
     )
 
-    # --- Step 2: VAD ---
-    t0 = time.time()
-    _report_progress(config, "vad", 0.0, "Starting voice activity detection")
-    logger.info("Running voice activity detection...")
-    speech_frames = _run_vad_cached(config, input_path, fps, total_frames)
-    timing["vad"] = time.time() - t0
-    speech_pct = np.mean(speech_frames) * 100
-    logger.info(f"VAD: {speech_pct:.1f}% speech detected")
-    _report_progress(config, "vad", 1.0, f"{speech_pct:.1f}% speech — {timing['vad']:.1f}s")
-
-    # --- Step 3: Motion detection ---
-    t0 = time.time()
-    _report_progress(config, "motion", 0.0, "Starting motion detection")
-    logger.info("Running motion detection...")
-    motion_frames = _run_motion_cached(config, input_path, fps, total_frames)
-    timing["motion"] = time.time() - t0
-    motion_pct = np.mean(motion_frames) * 100
-    logger.info(f"Motion: {motion_pct:.1f}% visual activity detected")
-    _report_progress(
-        config, "motion", 1.0, f"{motion_pct:.1f}% activity — {timing['motion']:.1f}s"
-    )
-
-    # --- Step 4: Transcription ---
-    t0 = time.time()
+    # --- Steps 2-4: Parallel analysis (VAD + Motion + Transcription) ---
+    # These three analyses are independent and can run concurrently.
+    # VAD reads audio, motion reads video frames, transcription reads audio
+    # through whisper. Running in parallel gives 2-3x speedup.
+    needs_transcription = config.use_llm or config.subtitle_style != "none"
     transcript = None
-    if config.use_llm or config.subtitle_style != "none":
+    analysis_t0 = time.time()
+
+    def _vad_task():
+        t0 = time.time()
+        _report_progress(config, "vad", 0.0, "Starting voice activity detection")
+        logger.info("Running voice activity detection...")
+        result = _run_vad_cached(config, input_path, fps, total_frames)
+        elapsed = time.time() - t0
+        pct = np.mean(result) * 100
+        logger.info(f"VAD: {pct:.1f}% speech detected")
+        _report_progress(config, "vad", 1.0, f"{pct:.1f}% speech — {elapsed:.1f}s")
+        return result, elapsed
+
+    def _motion_task():
+        t0 = time.time()
+        _report_progress(config, "motion", 0.0, "Starting motion detection")
+        logger.info("Running motion detection...")
+        result = _run_motion_cached(config, input_path, fps, total_frames)
+        elapsed = time.time() - t0
+        pct = np.mean(result) * 100
+        logger.info(f"Motion: {pct:.1f}% visual activity detected")
+        _report_progress(config, "motion", 1.0, f"{pct:.1f}% activity — {elapsed:.1f}s")
+        return result, elapsed
+
+    def _transcription_task():
+        t0 = time.time()
         _report_progress(config, "transcription", 0.0, "Starting transcription")
         logger.info(f"Transcribing with whisper model '{config.whisper_model}'...")
-        transcript = _run_transcription_cached(config, input_path)
-        timing["transcription"] = time.time() - t0
+        result = _run_transcription_cached(config, input_path)
+        elapsed = time.time() - t0
         logger.info(
-            f"Transcription: {len(transcript.words)} words, "
-            f"language={transcript.language}"
+            f"Transcription: {len(result.words)} words, "
+            f"language={result.language}"
         )
         _report_progress(
             config, "transcription", 1.0,
-            f"{len(transcript.words)} words — {timing['transcription']:.1f}s"
+            f"{len(result.words)} words — {elapsed:.1f}s"
+        )
+        return result, elapsed
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_vad = executor.submit(_vad_task)
+        future_motion = executor.submit(_motion_task)
+        future_transcription = (
+            executor.submit(_transcription_task) if needs_transcription else None
+        )
+
+        # Collect results (raises if any task failed)
+        speech_frames, timing["vad"] = future_vad.result()
+        motion_frames, timing["motion"] = future_motion.result()
+        if future_transcription is not None:
+            transcript, timing["transcription"] = future_transcription.result()
+
+    analysis_wall = time.time() - analysis_t0
+    analysis_sum = timing["vad"] + timing["motion"] + timing.get("transcription", 0)
+    if analysis_sum > 0:
+        logger.info(
+            f"Parallel analysis: {analysis_wall:.1f}s wall time "
+            f"(vs {analysis_sum:.1f}s sequential — "
+            f"{analysis_sum / analysis_wall:.1f}x speedup)"
         )
 
     # --- Step 5: Combine detection arrays ---

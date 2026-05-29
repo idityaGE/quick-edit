@@ -13,8 +13,10 @@ when possible, or filter_complex concat for cases requiring re-encoding.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from src.timeline.timeline import Timeline, Clip
@@ -275,8 +277,16 @@ def render_segments_then_concat(
         tmpdir = Path(tmpdir)
         segment_paths = []
 
-        # Step 1: Extract each clip
-        for i, clip in enumerate(timeline.clips):
+        # Step 1: Extract each clip (parallel)
+        n_clips = len(timeline.clips)
+        max_workers = min(os.cpu_count() or 2, 4)
+        logger.info(
+            f"Extracting {n_clips} segments using {max_workers} parallel workers"
+        )
+        segment_paths = [None] * n_clips
+        completed = 0
+
+        def _extract_segment(i: int, clip: Clip) -> tuple[int, Path]:
             seg_path = tmpdir / f"seg_{i:04d}.ts"
             cmd = [
                 "ffmpeg",
@@ -303,10 +313,21 @@ def render_segments_then_concat(
                 str(seg_path),
             ]
             _run_ffmpeg(cmd, quiet=True)
-            segment_paths.append(seg_path)
+            return i, seg_path
 
-            if (i + 1) % 10 == 0:
-                logger.info(f"Extracted segment {i + 1}/{len(timeline.clips)}")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_extract_segment, i, clip): i
+                for i, clip in enumerate(timeline.clips)
+            }
+            for future in as_completed(futures):
+                i, seg_path = future.result()
+                segment_paths[i] = seg_path
+                completed += 1
+                if completed % 10 == 0 or completed == n_clips:
+                    logger.info(
+                        f"Extracted segment {completed}/{n_clips}"
+                    )
 
         # Step 2: Concat using concat protocol
         concat_input = "|".join(str(p) for p in segment_paths)
