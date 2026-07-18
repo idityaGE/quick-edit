@@ -10,13 +10,13 @@ from pathlib import Path
 
 import numpy as np
 
-from src.timeline.timeline import (
-    Timeline,
+from quickedit.timeline.timeline import (
     Clip,
     CutSegment,
+    Timeline,
+    _fmt_time,
     frames_to_timeline,
     merge_timelines,
-    _fmt_time,
 )
 
 
@@ -361,8 +361,20 @@ class TestMergeTimelines:
             fps=30.0,
             duration=20.0,
             clips=[
-                Clip(source="/test.mp4", src_start=0.0, src_end=5.0, dst_start=0.0, duration=5.0),
-                Clip(source="/test.mp4", src_start=10.0, src_end=15.0, dst_start=5.0, duration=5.0),
+                Clip(
+                    source="/test.mp4",
+                    src_start=0.0,
+                    src_end=5.0,
+                    dst_start=0.0,
+                    duration=5.0,
+                ),
+                Clip(
+                    source="/test.mp4",
+                    src_start=10.0,
+                    src_end=15.0,
+                    dst_start=5.0,
+                    duration=5.0,
+                ),
             ],
             cuts=[
                 CutSegment(src_start=5.0, src_end=10.0, reason="silence"),

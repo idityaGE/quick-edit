@@ -1,27 +1,36 @@
 # QuickEdit
 
-AI-powered video editor that automatically trims silence, filler words, false starts, and tangents from recorded videos. Adds word-level animated subtitles.
+QuickEdit is a local-first video editing CLI. It removes silence and inactive
+sections using speech and motion analysis, then can generate animated or SRT
+subtitles. Optional semantic cuts use an LLM only when you explicitly enable
+them.
 
-## Quick Start
+## Install
+
+QuickEdit requires Python 3.11+, FFmpeg, and FFprobe.
 
 ```bash
-pip install -e .
-quickedit myvideo.mp4
+pip install quickedit
+quickedit myvideo.mp4 --dry-run
 ```
 
-## Documentation
+Enable semantic LLM editing only when you are ready to send transcript data to
+your selected provider:
 
-- **USER_GUIDE.md** — Simple explanations of all settings and flags
-- **REFERENCE.md** — Complete technical CLI reference
+```bash
+pip install 'quickedit[anthropic]'
+export ANTHROPIC_API_KEY='...'
+quickedit myvideo.mp4 --llm
+```
 
-## Key Features
+## Documentation and support
 
-- **Automatic editing** — Removes dead air, filler words, mistakes, and off-topic tangents using AI
-- **Speech + motion detection** — Keeps content when you talk or the screen changes
-- **Smart AI brain (optional)** — LLM analyzes transcripts to make semantic editing decisions
-- **Animated subtitles** — Word-by-word highlight style (TikTok/Instagram) or plain SRT
-- **Fast caching** — Analysis results cached so re-runs with different settings skip redundant work
+- [Documentation](https://idityaGE.github.io/quick-edit/)
+- [Report a bug](https://github.com/idityaGE/quick-edit/issues/new/choose)
+- [Ask a question or share an idea](https://github.com/idityaGE/quick-edit/discussions)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
 ## License
 
-MIT
+[MIT](LICENSE)

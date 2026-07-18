@@ -7,13 +7,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.analyze.combine import (
-    combine_or,
+from quickedit.analyze.combine import (
+    DetectionArrays,
     combine_and,
     combine_not,
+    combine_or,
     combine_xor,
     evaluate_expression,
-    DetectionArrays,
 )
 
 

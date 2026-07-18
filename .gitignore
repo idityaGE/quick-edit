@@ -1,4 +1,7 @@
 .venv/
+.env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 *.pyo
@@ -14,3 +17,13 @@ build/
 .DS_Store
 .opencode/
 *.mkv
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+htmlcov/
+coverage.xml
+.coverage
+node_modules/
+website/dist/
+website/.astro/

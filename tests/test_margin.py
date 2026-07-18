@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.edit.margin import apply_margin, apply_margin_seconds
+from quickedit.edit.margin import apply_margin, apply_margin_seconds
 
 
 class TestApplyMargin:

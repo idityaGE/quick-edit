@@ -1,31 +1,81 @@
 [project]
 name = "quickedit"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI-powered video editor that trims silence, filler, and tangents. Adds subtitles."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "QuickEdit contributors" }]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+]
 dependencies = [
     "faster-whisper>=1.1.0",
     "opencv-python-headless>=4.9.0",
     "numpy>=1.26.0",
-    "anthropic>=0.40.0",
-    "google-generativeai>=0.8.0",
     "click>=8.1.0",
     "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]
+anthropic = ["anthropic>=0.40.0"]
+gemini = ["google-genai>=1.0.0"]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
-    "ruff>=0.5.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.390",
+    "build>=1.2.2",
+    "twine>=6.0.1",
+    "pip-audit>=2.8.0",
 ]
 
+[project.urls]
+Homepage = "https://idityaGE.github.io/quick-edit/"
+Documentation = "https://idityaGE.github.io/quick-edit/"
+Repository = "https://github.com/idityaGE/quick-edit"
+Issues = "https://github.com/idityaGE/quick-edit/issues"
+Changelog = "https://github.com/idityaGE/quick-edit/blob/main/CHANGELOG.md"
+
 [project.scripts]
-quickedit = "src.cli:main"
+quickedit = "quickedit.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+
+[tool.coverage.run]
+branch = true
+source = ["quickedit"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+include = ["src/quickedit"]
+reportMissingImports = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

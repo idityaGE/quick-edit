@@ -6,19 +6,18 @@ from __future__ import annotations
 
 import json
 
-
-from src.edit.llm import (
-    _parse_llm_response,
-    _deduplicate_decisions,
-    _chunk_words,
-    _build_user_message,
-    _parse_decision_item,
-    _detect_provider,
+from quickedit.edit.edl import CutReason, EditDecision
+from quickedit.edit.llm import (
+    MAX_RESPONSE_SIZE,
     LLMProvider,
     SilentSegmentInfo,
-    MAX_RESPONSE_SIZE,
+    _build_user_message,
+    _chunk_words,
+    _deduplicate_decisions,
+    _detect_provider,
+    _parse_decision_item,
+    _parse_llm_response,
 )
-from src.edit.edl import EditDecision, CutReason
 
 
 class TestParseLLMResponse:

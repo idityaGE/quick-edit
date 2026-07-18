@@ -1,5 +1,22 @@
 # QuickEdit — Changelog
 
+## 1.0.0 — Unreleased
+
+### Production release foundation
+
+- Renamed the installable package from `src` to `quickedit`; the `quickedit`
+  command remains the supported user interface.
+- Made LLM editing explicit opt-in with `--llm`; regular editing is local-first.
+- Added safe output replacement with `--overwrite`, atomic rendering, cache
+  clearing, FFmpeg/FFprobe preflight, and audio-stream validation.
+- Migrated Gemini integration to the maintained `google-genai` SDK and made
+  Anthropic/Gemini provider dependencies optional extras.
+- Added reproducible Python and documentation lockfiles, automated lint/type/
+  test/build checks, GitHub Pages deployment, release publishing, CodeQL, and
+  Dependabot.
+- Added MIT licensing, contribution/community/security policies, issue forms,
+  a public roadmap, and the Astro/Starlight documentation site.
+
 ## Session 3: Performance, UX, and Reliability Improvements
 
 **Date:** 2026-05-30  

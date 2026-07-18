@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.edit.smoothing import smooth, smooth_seconds, _remove_short_segments
+from quickedit.edit.smoothing import _remove_short_segments, smooth, smooth_seconds
 
 
 class TestSmooth:

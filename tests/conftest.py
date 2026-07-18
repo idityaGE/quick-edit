@@ -4,14 +4,14 @@ Shared fixtures for QuickEdit tests.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 import json
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from src.timeline.timeline import Timeline, Clip, CutSegment
-from src.analyze.transcribe import TranscriptionResult, Segment, Word
+from quickedit.analyze.transcribe import Segment, TranscriptionResult, Word
+from quickedit.timeline.timeline import Clip, CutSegment, Timeline
 
 
 @pytest.fixture
