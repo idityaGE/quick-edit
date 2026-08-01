@@ -229,8 +229,8 @@ async def _create_anthropic_chunk_processor(
         from anthropic import AsyncAnthropic
     except ImportError as exc:
         raise RuntimeError(
-            "Anthropic support is not installed. Install it with "
-            "`pip install 'quickedit[anthropic]'`."
+            "Anthropic support is not installed. Re-run the source installer with "
+            "QUICKEDIT_EXTRAS=anthropic."
         ) from exc
 
     client = AsyncAnthropic(api_key=api_key, timeout=LLM_PROVIDER_TIMEOUT_SECONDS)
@@ -269,8 +269,8 @@ async def _create_gemini_chunk_processor(
         from google.genai import types
     except ImportError as exc:
         raise RuntimeError(
-            "Gemini support is not installed. Install it with "
-            "`pip install 'quickedit[gemini]'`."
+            "Gemini support is not installed. Re-run the source installer with "
+            "QUICKEDIT_EXTRAS=gemini."
         ) from exc
 
     # Configure API key
@@ -412,8 +412,8 @@ def _analyze_with_llm_sync(
             from google.genai import types
         except ImportError as exc:
             raise RuntimeError(
-                "Gemini support is not installed. Install it with "
-                "`pip install 'quickedit[gemini]'`."
+                "Gemini support is not installed. Re-run the source installer with "
+                "QUICKEDIT_EXTRAS=gemini."
             ) from exc
 
         api_key = (
@@ -434,8 +434,8 @@ def _analyze_with_llm_sync(
             from anthropic import Anthropic
         except ImportError as exc:
             raise RuntimeError(
-                "Anthropic support is not installed. Install it with "
-                "`pip install 'quickedit[anthropic]'`."
+                "Anthropic support is not installed. Re-run the source installer with "
+                "QUICKEDIT_EXTRAS=anthropic."
             ) from exc
 
         client = Anthropic(api_key=api_key, timeout=LLM_PROVIDER_TIMEOUT_SECONDS)

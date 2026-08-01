@@ -11,14 +11,21 @@ weights on first use.
 
 ## Enable a provider
 
+Install the matching optional provider dependency group first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/idityaGE/quick-edit/main/scripts/install.sh | QUICKEDIT_EXTRAS=anthropic bash
+```
+
 ```bash
 export ANTHROPIC_API_KEY='...'
 quickedit recording.mp4 --llm --llm-model claude-sonnet-4-20250514
 ```
 
-Or, after installing the Gemini extra:
+Or, for Gemini:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/idityaGE/quick-edit/main/scripts/install.sh | QUICKEDIT_EXTRAS=gemini bash
 export GEMINI_API_KEY='...'
 quickedit recording.mp4 --llm --llm-model gemini-3.5-flash
 ```

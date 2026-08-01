@@ -36,6 +36,6 @@ selected compute type.
 
 ## LLM provider errors
 
-Confirm you installed the matching optional extra, set the matching API key,
-and selected a supported model identifier. `--no-llm` returns to local-only
-editing.
+Confirm you installed the matching optional provider dependency group with the
+source installer, set the matching API key, and selected a supported model
+identifier. `--no-llm` returns to local-only editing.

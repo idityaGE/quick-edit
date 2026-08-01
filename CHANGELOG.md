@@ -12,8 +12,9 @@
 - Migrated Gemini integration to the maintained `google-genai` SDK and made
   Anthropic/Gemini provider dependencies optional extras.
 - Added reproducible Python and documentation lockfiles, automated lint/type/
-  test/build checks, GitHub Pages deployment, release publishing, CodeQL, and
-  Dependabot.
+  test/build checks, GitHub Pages deployment, CodeQL, and Dependabot.
+- Documented source-only installation and added a Linux/macOS source installer
+  script.
 - Added MIT licensing, contribution/community/security policies, issue forms,
   a public roadmap, and the Astro/Starlight documentation site.
 
