@@ -200,9 +200,9 @@ def _validate_config(config: PipelineConfig) -> None:
 )
 @click.option(
     "--motion-backend",
-    default="opencv",
+    default="ffmpeg",
     type=click.Choice(["opencv", "opencv-parallel", "ffmpeg"]),
-    help="Motion backend: opencv, opencv-parallel, or ffmpeg. Default: opencv.",
+    help="Motion backend: ffmpeg, opencv, or opencv-parallel. Default: ffmpeg.",
 )
 @click.option(
     "--motion-workers",

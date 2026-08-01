@@ -79,8 +79,8 @@ Use this when CPU cores are available and OpenCV decoding is the bottleneck.
 quickedit tutorial.mp4 --motion-backend ffmpeg
 ```
 
-This backend decodes scaled grayscale frames with FFmpeg before computing frame
-differences.
+This is the default backend. It decodes scaled grayscale frames with FFmpeg
+before computing frame differences.
 
 ## Disable subtitles
 

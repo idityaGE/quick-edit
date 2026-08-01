@@ -42,7 +42,7 @@ Pass `--config settings.json`. Keys use underscores, for example:
 {
   "whisper_model": "small",
   "motion_frame_skip": 2,
-  "motion_backend": "opencv-parallel",
+  "motion_backend": "ffmpeg",
   "motion_workers": 4,
   "subtitle_style": "simple",
   "use_llm": false,
@@ -70,7 +70,7 @@ needs word timestamps. Speech detection uses VAD and does not require subtitles.
 | `--motion-threshold FLOAT` | `0.02` | Fraction of changed pixels required for a frame to count as active. |
 | `--motion-pixel-threshold INTEGER` | `10` | Pixel brightness change from `0` to `255` required before a pixel counts as changed. |
 | `--motion-frame-skip INTEGER` | `1` | Analyze every Nth frame. Higher values are faster but can miss short changes. |
-| `--motion-backend VALUE` | `opencv` | Motion backend: `opencv`, `opencv-parallel`, or `ffmpeg`. |
+| `--motion-backend VALUE` | `ffmpeg` | Motion backend: `ffmpeg`, `opencv`, or `opencv-parallel`. |
 | `--motion-workers INTEGER` | `4` | Worker count for `--motion-backend opencv-parallel`. |
 
 Motion analysis is skipped when `--combine` does not reference `motion` and LLM

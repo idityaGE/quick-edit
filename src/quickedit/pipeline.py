@@ -116,7 +116,7 @@ class PipelineConfig:
 
     # Advanced: Motion detection performance
     motion_frame_skip: int = 1  # 1 = all frames, 2 = every other, etc.
-    motion_backend: str = "opencv"  # "opencv", "opencv-parallel", or "ffmpeg"
+    motion_backend: str = "ffmpeg"  # "ffmpeg", "opencv", or "opencv-parallel"
     motion_workers: int = 4  # workers for opencv-parallel backend
 
     # Progress reporting

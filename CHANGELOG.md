@@ -15,6 +15,10 @@
   test/build checks, GitHub Pages deployment, CodeQL, and Dependabot.
 - Documented source-only installation and added a Linux/macOS source installer
   script.
+- Added generated-media end-to-end smoke tests and a motion-backend benchmark
+  script for comparing real screen recordings.
+- Made the FFmpeg motion backend the default after benchmarks showed matching
+  activity detection with much faster analysis on long screen recordings.
 - Added MIT licensing, contribution/community/security policies, issue forms,
   a public roadmap, and the Astro/Starlight documentation site.
 

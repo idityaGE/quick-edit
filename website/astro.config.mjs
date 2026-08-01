@@ -28,6 +28,7 @@ export default defineConfig({
           { label: 'Subtitles, output, and cache', slug: 'guides/output-and-cache' },
           { label: 'Optional LLM editing', slug: 'guides/llm-editing' },
           { label: 'How it works', slug: 'guides/how-it-works' },
+          { label: 'Motion benchmarks', slug: 'guides/motion-benchmarks' },
           { label: 'Troubleshooting', slug: 'guides/troubleshooting' },
         ] },
         { label: 'Reference', items: [

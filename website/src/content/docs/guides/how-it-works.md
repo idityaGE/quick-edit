@@ -27,10 +27,10 @@ faster-whisper, and converts speech segments to a frame-aligned boolean array.
 
 Motion detection reads video frames, downscales them, converts them to
 grayscale, applies blur, compares each analyzed frame to the previous frame, and
-marks activity when enough pixels change. The `opencv` backend does this in a
-single OpenCV path. The `opencv-parallel` backend parallelizes frame
-preprocessing. The `ffmpeg` backend asks FFmpeg to decode scaled grayscale
-frames before QuickEdit computes differences.
+marks activity when enough pixels change. The default `ffmpeg` backend asks
+FFmpeg to decode scaled grayscale frames before QuickEdit computes differences.
+The `opencv` backend does decode and preprocessing through OpenCV. The
+`opencv-parallel` backend parallelizes OpenCV frame preprocessing.
 
 Transcription uses faster-whisper word timestamps. It is needed for subtitles,
 LLM editing, and the `words` combine detector. It is skipped for speech-only
@@ -100,7 +100,7 @@ disabled and no word detector is used, transcription is skipped. When independen
 analyses are required together, QuickEdit runs them concurrently.
 
 For motion-heavy videos, `--motion-frame-skip` reduces the number of analyzed
-frames and interpolates the result back to the full frame count. For CPU-heavy
-OpenCV preprocessing, `--motion-backend opencv-parallel` can use multiple
-workers. For some files, `--motion-backend ffmpeg` is faster because FFmpeg
-handles scaled grayscale frame decoding efficiently.
+frames and interpolates the result back to the full frame count. The default
+`--motion-backend ffmpeg` is usually fastest when decoding dominates. For
+CPU-heavy OpenCV preprocessing, `--motion-backend opencv-parallel` can use
+multiple workers.
