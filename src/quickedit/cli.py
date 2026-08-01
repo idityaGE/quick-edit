@@ -73,6 +73,13 @@ def _validate_config(config: PipelineConfig) -> None:
         )
     if config.motion_frame_skip < 1:
         errors.append(f"motion_frame_skip must be >= 1, got {config.motion_frame_skip}")
+    if config.motion_backend not in {"opencv", "opencv-parallel", "ffmpeg"}:
+        errors.append(
+            "motion_backend must be one of: opencv, opencv-parallel, ffmpeg; "
+            f"got {config.motion_backend}"
+        )
+    if config.motion_workers < 1:
+        errors.append(f"motion_workers must be >= 1, got {config.motion_workers}")
     if config.start_margin < 0:
         errors.append(f"margin must be >= 0, got {config.start_margin}")
     if config.minclip < 0:
@@ -190,6 +197,18 @@ def _validate_config(config: PipelineConfig) -> None:
     default=1,
     type=int,
     help="Analyze every Nth frame for motion. 1=all, 2=every other. Default: 1.",
+)
+@click.option(
+    "--motion-backend",
+    default="opencv",
+    type=click.Choice(["opencv", "opencv-parallel", "ffmpeg"]),
+    help="Motion backend: opencv, opencv-parallel, or ffmpeg. Default: opencv.",
+)
+@click.option(
+    "--motion-workers",
+    default=4,
+    type=int,
+    help="Worker count for --motion-backend opencv-parallel. Default: 4.",
 )
 # Edit options
 @click.option(
@@ -325,6 +344,8 @@ def main(
     motion_threshold: float,
     motion_pixel_threshold: int,
     motion_frame_skip: int,
+    motion_backend: str,
+    motion_workers: int,
     combine_expr: str,
     margin: float,
     minclip: float,
@@ -439,6 +460,8 @@ def main(
             motion_threshold=motion_threshold,
             motion_pixel_threshold=motion_pixel_threshold,
             motion_frame_skip=motion_frame_skip,
+            motion_backend=motion_backend,
+            motion_workers=motion_workers,
             combine_expr=combine_expr,
             start_margin=margin,
             end_margin=margin,

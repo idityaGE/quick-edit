@@ -78,3 +78,33 @@ def test_cli_clears_cache_before_processing(monkeypatch, tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
     assert cleared == [str(input_path)]
     assert "Cleared 3 cached item(s)." in result.output
+
+
+def test_cli_passes_motion_backend_options(monkeypatch, tmp_path: Path) -> None:
+    input_path = tmp_path / "recording.mp4"
+    input_path.touch()
+    captured = {}
+
+    def fake_run_pipeline(config):
+        captured["config"] = config
+        return _result(config.output_path)
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run_pipeline)
+
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            str(input_path),
+            "--dry-run",
+            "--subtitle-style",
+            "none",
+            "--motion-backend",
+            "opencv-parallel",
+            "--motion-workers",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["config"].motion_backend == "opencv-parallel"
+    assert captured["config"].motion_workers == 4

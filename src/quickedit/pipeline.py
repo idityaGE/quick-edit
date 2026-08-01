@@ -116,6 +116,8 @@ class PipelineConfig:
 
     # Advanced: Motion detection performance
     motion_frame_skip: int = 1  # 1 = all frames, 2 = every other, etc.
+    motion_backend: str = "opencv"  # "opencv", "opencv-parallel", or "ffmpeg"
+    motion_workers: int = 4  # workers for opencv-parallel backend
 
     # Progress reporting
     progress_callback: Callable[[str, float, str], None] | None = None
@@ -171,6 +173,39 @@ def _report_progress(
         config.progress_callback(step, progress, message)
 
 
+def _detection_names_in_expr(expr: str | list) -> set[str]:
+    """Return detection array names referenced by a combine expression."""
+    operations = {"or", "and", "not", "xor"}
+
+    if isinstance(expr, str):
+        if ":" in expr:
+            op, operands = expr.split(":", 1)
+            names = {op.strip()} if op.strip().lower() not in operations else set()
+            names.update(
+                operand.strip()
+                for operand in operands.split(",")
+                if operand.strip() and operand.strip().lower() not in operations
+            )
+            return names
+        stripped = expr.strip()
+        return {stripped} if stripped else set()
+
+    if isinstance(expr, list):
+        names: set[str] = set()
+        if not expr:
+            return names
+        for index, item in enumerate(expr):
+            if isinstance(item, list):
+                names.update(_detection_names_in_expr(item))
+            elif isinstance(item, str):
+                if index == 0 and item.lower() in operations:
+                    continue
+                names.add(item)
+        return names
+
+    return set()
+
+
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
     """
     Run the full video processing pipeline.
@@ -221,7 +256,12 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     # These three analyses are independent and can run concurrently.
     # VAD reads audio, motion reads video frames, transcription reads audio
     # through whisper. Running in parallel gives 2-3x speedup.
-    needs_transcription = config.use_llm or config.subtitle_style != "none"
+    detection_names = _detection_names_in_expr(config.combine_expr)
+    needs_vad = "speech" in detection_names or config.use_llm
+    needs_motion = "motion" in detection_names or config.use_llm
+    needs_transcription = (
+        config.use_llm or config.subtitle_style != "none" or "words" in detection_names
+    )
     transcript = None
     analysis_t0 = time.time()
 
@@ -261,21 +301,28 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         )
         return result, elapsed
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future_vad = executor.submit(_vad_task)
-        future_motion = executor.submit(_motion_task)
+    max_workers = max(1, sum([needs_vad, needs_motion, needs_transcription]))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_vad = executor.submit(_vad_task) if needs_vad else None
+        future_motion = executor.submit(_motion_task) if needs_motion else None
         future_transcription = (
             executor.submit(_transcription_task) if needs_transcription else None
         )
 
         # Collect results (raises if any task failed)
-        speech_frames, timing["vad"] = future_vad.result()
-        motion_frames, timing["motion"] = future_motion.result()
+        speech_frames = None
+        motion_frames = None
+        if future_vad is not None:
+            speech_frames, timing["vad"] = future_vad.result()
+        if future_motion is not None:
+            motion_frames, timing["motion"] = future_motion.result()
         if future_transcription is not None:
             transcript, timing["transcription"] = future_transcription.result()
 
     analysis_wall = time.time() - analysis_t0
-    analysis_sum = timing["vad"] + timing["motion"] + timing.get("transcription", 0)
+    analysis_sum = sum(
+        timing.get(key, 0) for key in ("vad", "motion", "transcription")
+    )
     if analysis_sum > 0:
         logger.info(
             f"Parallel analysis: {analysis_wall:.1f}s wall time "
@@ -287,11 +334,12 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     t0 = time.time()
     _report_progress(config, "combine", 0.0, "Combining detection arrays")
     logger.info(f"Combining detectors: {config.combine_expr}")
-    detections = DetectionArrays(
-        arrays={"speech": speech_frames, "motion": motion_frames},
-        fps=fps,
-        total_frames=total_frames,
-    )
+    detection_arrays: dict[str, np.ndarray] = {}
+    if speech_frames is not None:
+        detection_arrays["speech"] = speech_frames
+    if motion_frames is not None:
+        detection_arrays["motion"] = motion_frames
+    detections = DetectionArrays(arrays=detection_arrays, fps=fps, total_frames=total_frames)
 
     # If we have transcription, add word-based detection too
     if transcript:
@@ -335,6 +383,8 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     # --- Step 8: LLM pass (optional) ---
     llm_decisions: list[EditDecision] = []
     if config.use_llm and transcript:
+        if speech_frames is None or motion_frames is None:
+            raise RuntimeError("LLM analysis requires speech and motion detection")
         t0 = time.time()
         _report_progress(config, "llm", 0.0, "Starting LLM analysis")
         logger.info("Running LLM semantic analysis...")
@@ -526,6 +576,7 @@ def _run_motion_cached(
         "blur_sigma": config.motion_blur_sigma,
         "pixel_threshold": config.motion_pixel_threshold,
         "frame_skip": config.motion_frame_skip,
+        "backend": config.motion_backend,
         "fps": round(fps, 4),
     }
 
@@ -542,6 +593,8 @@ def _run_motion_cached(
         blur_sigma=config.motion_blur_sigma,
         frame_skip=config.motion_frame_skip,
         pixel_threshold=config.motion_pixel_threshold,
+        backend=config.motion_backend,
+        workers=config.motion_workers,
         progress_callback=lambda p: _report_progress(
             config, "motion", p * 0.9, f"Analyzing frames... {p * 100:.0f}%"
         ),
