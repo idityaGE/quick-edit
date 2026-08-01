@@ -23,9 +23,11 @@ export default defineConfig({
           { label: 'Your first edit', slug: 'getting-started/first-edit' },
         ] },
         { label: 'Guides', items: [
+          { label: 'Common commands', slug: 'guides/common-commands' },
           { label: 'Editing controls', slug: 'guides/editing-controls' },
           { label: 'Subtitles, output, and cache', slug: 'guides/output-and-cache' },
           { label: 'Optional LLM editing', slug: 'guides/llm-editing' },
+          { label: 'How it works', slug: 'guides/how-it-works' },
           { label: 'Troubleshooting', slug: 'guides/troubleshooting' },
         ] },
         { label: 'Reference', items: [
