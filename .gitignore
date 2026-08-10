@@ -10,6 +10,7 @@ dist/
 build/
 .quickedit_cache/
 *.mp4
+!.github/assets/*.mp4
 *.wav
 *.ass
 *.srt

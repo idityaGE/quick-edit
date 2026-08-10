@@ -5,6 +5,39 @@ sections using speech and motion analysis, then can generate animated or SRT
 subtitles. Optional semantic cuts use an LLM only when you explicitly enable
 them.
 
+## Demo
+
+**Before:** `demo.mp4`
+
+<video src="https://github.com/idityaGE/quick-edit/raw/main/.github/assets/demo.mp4" controls></video>
+
+```bash
+uv run quickedit ./test-videos/demo.mp4 --subtitle-style none --motion-backend ffmpeg --vad-threshold 0.2 --motion-threshold 0.001 --overwrite -o ./test-videos/demo-edited.mp4
+```
+
+**After:** `demo-edited.mp4`
+
+<video src="https://github.com/idityaGE/quick-edit/raw/main/.github/assets/demo-edited.mp4" controls></video>
+
+```text
+Source: test-videos/demo.mp4
+Original duration: 03:48.77
+Output duration:   03:18.52
+Time saved:        00:30.25 (13.2%)
+Clips: 14
+Cuts:  13
+
+Timing:
+  vad: 1.4s
+  motion: 17.9s
+  combine: 0.0s
+  margin_smooth: 0.0s
+  render: 43.3s
+  total: 62.6s
+
+Output: ./test-videos/demo-edited.mp4
+```
+
 ## Install
 
 QuickEdit is installed from source code. It requires Python 3.11+, Git, FFmpeg,
@@ -40,6 +73,7 @@ export ANTHROPIC_API_KEY='...'
 ## Documentation and support
 
 - [Documentation](https://idityaGE.github.io/quick-edit/)
+- [Learn the QuickEdit CLI flow](LEARN_QUICKEDIT_CLI_FLOW.md)
 - [Report a bug](https://github.com/idityaGE/quick-edit/issues/new/choose)
 - [Ask a question or share an idea](https://github.com/idityaGE/quick-edit/discussions)
 - [Contributing](CONTRIBUTING.md)
