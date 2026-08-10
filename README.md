@@ -9,7 +9,7 @@ them.
 
 **Before:** `demo.mp4`
 
-https://github.com/idityaGE/quick-edit/raw/main/.github/assets/demo.mp4
+https://github.com/user-attachments/assets/e22e5336-6cb6-4203-9d0e-411609a4b312.mp4
 
 ```bash
 uv run quickedit ./test-videos/demo.mp4 --subtitle-style none --motion-backend ffmpeg --vad-threshold 0.2 --motion-threshold 0.001 --overwrite -o ./test-videos/demo-edited.mp4
@@ -17,7 +17,7 @@ uv run quickedit ./test-videos/demo.mp4 --subtitle-style none --motion-backend f
 
 **After:** `demo-edited.mp4`
 
-https://github.com/idityaGE/quick-edit/raw/main/.github/assets/demo-edited.mp4
+https://github.com/user-attachments/assets/5660835c-f146-469c-83ff-f6fd84a98f84.mp4
 
 ```text
 Source: test-videos/demo.mp4
