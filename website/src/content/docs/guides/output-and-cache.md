@@ -14,16 +14,22 @@ For `recording.mp4`, QuickEdit writes:
 Use `--subtitle-style fancy`, `simple`, or `none`. Fancy subtitles are ASS files
 with word highlighting; simple subtitles are portable SRT files.
 
+Video, timeline, and selected subtitle artifacts are all protected by
+`--overwrite`. Sidecars are published atomically after analysis and rendering
+succeed, so a failed render does not replace an existing timeline or subtitle.
+
 ## Cache
 
-Analysis caches live beside the input video in `.quickedit_cache/`. Cache keys
-include the input identity and relevant analysis settings, so changing a render
-setting does not require re-transcription.
+Analysis caches live beside the input video in `.quickedit_cache/`. Each source
+video has an isolated, schema-versioned namespace. Cache keys include the input
+identity and relevant analysis settings, so changing a render setting does not
+require re-transcription while analysis changes can invalidate stale data.
 
 ```bash
 quickedit recording.mp4 --clear-cache
 quickedit recording.mp4 --no-cache
 ```
 
-`--clear-cache` clears entries before processing; `--no-cache` disables cache
-reads and writes for that invocation.
+`--clear-cache` clears only the selected input's entries before processing;
+neighboring videos keep their caches. `--no-cache` disables cache reads and
+writes for that invocation.

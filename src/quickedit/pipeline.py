@@ -13,8 +13,10 @@ Ties together all modules into a single processing pipeline:
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -113,6 +115,8 @@ class PipelineConfig:
 
     # Advanced: Silent segment classification
     silent_segment_min_duration: float = 0.5  # minimum duration to classify
+    silent_segment_active_frame_ratio_threshold: float = 0.5
+    # minimum fraction of motion-positive frames considered visual activity
 
     # Advanced: Motion detection performance
     motion_frame_skip: int = 1  # 1 = all frames, 2 = every other, etc.
@@ -143,8 +147,11 @@ class PipelineResult:
         if self.timing:
             lines.append("\nTiming:")
             for step, elapsed in self.timing.items():
-                lines.append(f"  {step}: {elapsed:.1f}s")
-            total = sum(self.timing.values())
+                if step != "total":
+                    lines.append(f"  {step}: {elapsed:.1f}s")
+            total = self.timing.get("total")
+            if total is None:
+                total = sum(self.timing.values())
             lines.append(f"  total: {total:.1f}s")
         return "\n".join(lines)
 
@@ -206,6 +213,30 @@ def _detection_names_in_expr(expr: str | list) -> set[str]:
     return set()
 
 
+def _temporary_sidecar_path(final_path: Path) -> Path:
+    """Create a temporary sidecar with normal file-create permissions."""
+    temporary_path = final_path.with_name(
+        f".{final_path.name}.quickedit-{uuid.uuid4().hex}{final_path.suffix}"
+    )
+    file_descriptor = os.open(
+        temporary_path,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o666,
+    )
+    os.close(file_descriptor)
+    try:
+        try:
+            existing_mode = final_path.stat().st_mode & 0o777
+        except FileNotFoundError:
+            pass
+        else:
+            os.chmod(temporary_path, existing_mode)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return temporary_path
+
+
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
     """
     Run the full video processing pipeline.
@@ -224,6 +255,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
 
     Returns PipelineResult with output path, timeline, and timing info.
     """
+    pipeline_t0 = time.perf_counter()
     input_path = Path(config.input_path)
     if not input_path.exists():
         raise FileNotFoundError(f"Input video not found: {input_path}")
@@ -320,9 +352,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             transcript, timing["transcription"] = future_transcription.result()
 
     analysis_wall = time.time() - analysis_t0
-    analysis_sum = sum(
-        timing.get(key, 0) for key in ("vad", "motion", "transcription")
-    )
+    analysis_sum = sum(timing.get(key, 0) for key in ("vad", "motion", "transcription"))
     if analysis_sum > 0:
         logger.info(
             f"Parallel analysis: {analysis_wall:.1f}s wall time "
@@ -339,7 +369,9 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         detection_arrays["speech"] = speech_frames
     if motion_frames is not None:
         detection_arrays["motion"] = motion_frames
-    detections = DetectionArrays(arrays=detection_arrays, fps=fps, total_frames=total_frames)
+    detections = DetectionArrays(
+        arrays=detection_arrays, fps=fps, total_frames=total_frames
+    )
 
     # If we have transcription, add word-based detection too
     if transcript:
@@ -396,7 +428,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             speech_frames,
             motion_frames,
             fps,
-            config.motion_threshold,
+            config.silent_segment_active_frame_ratio_threshold,
             min_duration=config.silent_segment_min_duration,
         )
 
@@ -436,85 +468,101 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
 
     logger.info(f"\n{timeline.summary()}")
 
-    # --- Step 9: Generate subtitles ---
-    subtitle_path = None
-    if transcript and config.subtitle_style != "none":
-        t0 = time.time()
-        _report_progress(config, "subtitles", 0.0, "Generating subtitles")
-        logger.info("Generating subtitles...")
-
-        if config.subtitle_style == "fancy":
-            sub_ext = ".ass"
-            subtitle_path = Path(output_path).with_suffix(sub_ext)
-            style = SubtitleStyle(
-                font_name=config.subtitle_font,
-                font_size=config.subtitle_size,
-                primary_color=config.subtitle_color,
-                highlight_color=config.subtitle_highlight,
-            )
-            _report_progress(config, "subtitles", 0.3, "Writing ASS subtitles")
-            generate_ass_subtitles(
-                transcript.words,
-                timeline,
-                subtitle_path,
-                style,
-                silence_gap=config.subtitle_silence_gap,
-            )
-        else:
-            sub_ext = ".srt"
-            subtitle_path = Path(output_path).with_suffix(sub_ext)
-            _report_progress(config, "subtitles", 0.3, "Writing SRT subtitles")
-            generate_srt_subtitles(
-                transcript.words,
-                timeline,
-                subtitle_path,
-                silence_gap=config.subtitle_silence_gap,
-            )
-
-        timing["subtitles"] = time.time() - t0
-        logger.info(f"Subtitles written to {subtitle_path}")
-        _report_progress(
-            config, "subtitles", 1.0, f"Written — {timing['subtitles']:.1f}s"
-        )
-
-    # Save timeline JSON alongside output
+    # --- Steps 9-10: Generate temporary sidecars, render, then publish ---
     timeline_path = Path(output_path).with_suffix(".timeline.json")
-    timeline.to_json(timeline_path)
-    logger.info(f"Timeline saved to {timeline_path}")
+    temporary_sidecars: list[Path] = []
+    subtitle_path: Path | None = None
+    temporary_subtitle_path: Path | None = None
 
-    # --- Step 10: Render ---
-    if config.dry_run:
-        logger.info("Dry run -- skipping render. Timeline and subtitles generated.")
-        # Print detailed cut list
-        for i, cut in enumerate(timeline.cuts):
-            text = ""
-            if transcript:
-                text = transcript.get_text_in_range(cut.src_start, cut.src_end)
-                if text:
-                    text = f' "{text[:60]}"'
-            reason = f" ({cut.reason})" if cut.reason else ""
-            logger.info(
-                f"  CUT {i + 1}: {cut.src_start:.2f}s - {cut.src_end:.2f}s"
-                f"{reason}{text}"
+    try:
+        temporary_timeline_path = _temporary_sidecar_path(timeline_path)
+        temporary_sidecars.append(temporary_timeline_path)
+        timeline.to_json(temporary_timeline_path)
+
+        if transcript and config.subtitle_style != "none":
+            t0 = time.time()
+            _report_progress(config, "subtitles", 0.0, "Generating subtitles")
+            logger.info("Generating subtitles...")
+
+            sub_ext = ".ass" if config.subtitle_style == "fancy" else ".srt"
+            subtitle_path = Path(output_path).with_suffix(sub_ext)
+            temporary_subtitle_path = _temporary_sidecar_path(subtitle_path)
+            temporary_sidecars.append(temporary_subtitle_path)
+
+            if config.subtitle_style == "fancy":
+                style = SubtitleStyle(
+                    font_name=config.subtitle_font,
+                    font_size=config.subtitle_size,
+                    primary_color=config.subtitle_color,
+                    highlight_color=config.subtitle_highlight,
+                )
+                _report_progress(config, "subtitles", 0.3, "Writing ASS subtitles")
+                generate_ass_subtitles(
+                    transcript.words,
+                    timeline,
+                    temporary_subtitle_path,
+                    style,
+                    silence_gap=config.subtitle_silence_gap,
+                )
+            else:
+                _report_progress(config, "subtitles", 0.3, "Writing SRT subtitles")
+                generate_srt_subtitles(
+                    transcript.words,
+                    timeline,
+                    temporary_subtitle_path,
+                    silence_gap=config.subtitle_silence_gap,
+                )
+
+            timing["subtitles"] = time.time() - t0
+            _report_progress(
+                config,
+                "subtitles",
+                1.0,
+                f"Generated — {timing['subtitles']:.1f}s",
             )
-    else:
-        t0 = time.time()
-        _report_progress(config, "render", 0.0, "Starting FFmpeg render")
-        logger.info("Rendering final video...")
-        render_video(
-            timeline=timeline,
-            output_path=output_path,
-            subtitle_path=subtitle_path,
-            codec=config.video_codec,
-            crf=config.crf,
-            preset=config.preset,
-            audio_codec=config.audio_codec,
-            audio_bitrate=config.audio_bitrate,
-        )
-        timing["render"] = time.time() - t0
-        logger.info(f"Output written to {output_path}")
-        _report_progress(config, "render", 1.0, f"Done — {timing['render']:.1f}s")
 
+        if config.dry_run:
+            logger.info("Dry run -- skipping render. Timeline and subtitles generated.")
+            # Print detailed cut list
+            for i, cut in enumerate(timeline.cuts):
+                text = ""
+                if transcript:
+                    text = transcript.get_text_in_range(cut.src_start, cut.src_end)
+                    if text:
+                        text = f' "{text[:60]}"'
+                reason = f" ({cut.reason})" if cut.reason else ""
+                logger.info(
+                    f"  CUT {i + 1}: {cut.src_start:.2f}s - {cut.src_end:.2f}s"
+                    f"{reason}{text}"
+                )
+        else:
+            t0 = time.time()
+            _report_progress(config, "render", 0.0, "Starting FFmpeg render")
+            logger.info("Rendering final video...")
+            render_video(
+                timeline=timeline,
+                output_path=output_path,
+                subtitle_path=temporary_subtitle_path,
+                codec=config.video_codec,
+                crf=config.crf,
+                preset=config.preset,
+                audio_codec=config.audio_codec,
+                audio_bitrate=config.audio_bitrate,
+            )
+            timing["render"] = time.time() - t0
+            logger.info(f"Output written to {output_path}")
+            _report_progress(config, "render", 1.0, f"Done — {timing['render']:.1f}s")
+
+        os.replace(temporary_timeline_path, timeline_path)
+        if temporary_subtitle_path is not None and subtitle_path is not None:
+            os.replace(temporary_subtitle_path, subtitle_path)
+            logger.info(f"Subtitles written to {subtitle_path}")
+        logger.info(f"Timeline saved to {timeline_path}")
+    finally:
+        for temporary_path in temporary_sidecars:
+            temporary_path.unlink(missing_ok=True)
+
+    timing["total"] = time.perf_counter() - pipeline_t0
     return PipelineResult(
         output_path=output_path,
         timeline=timeline,
@@ -736,7 +784,7 @@ def _classify_silent_segments(
     speech_frames: np.ndarray,
     motion_frames: np.ndarray,
     fps: float,
-    motion_threshold: float,
+    active_frame_ratio_threshold: float,
     min_duration: float = 0.5,
 ) -> list[SilentSegmentInfo]:
     """
@@ -757,17 +805,20 @@ def _classify_silent_segments(
         if duration < min_duration:
             continue
 
-        # Check motion in this range
+        # Motion detection has already classified each frame. Compare the
+        # fraction of active frames with a threshold expressed in the same unit.
         motion_slice = motion_frames[start_frame:end_frame]
-        motion_score = float(np.mean(motion_slice)) if len(motion_slice) > 0 else 0.0
-        has_activity = motion_score >= motion_threshold
+        active_frame_ratio = (
+            float(np.mean(motion_slice)) if len(motion_slice) > 0 else 0.0
+        )
+        has_activity = active_frame_ratio >= active_frame_ratio_threshold
 
         segments.append(
             SilentSegmentInfo(
                 start=start_frame / fps,
                 end=end_frame / fps,
                 has_visual_activity=has_activity,
-                motion_score=motion_score,
+                motion_score=active_frame_ratio,
             )
         )
 

@@ -15,7 +15,9 @@ uv run pyright
 uv run pytest --cov
 ```
 
-Run `npm ci` and `npm run build` in `website/` when changing documentation.
+Run `npm ci`, `npm run build`, and `npm audit` in `website/` when changing
+documentation dependencies. Pull requests run the Python 3.11/3.13 test matrix,
+quality checks, package and website builds, and dependency audits in CI.
 
 ## Pull requests
 

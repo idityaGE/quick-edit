@@ -18,11 +18,13 @@ then built-in default. Environment variables use the `QUICKEDIT_` prefix.
 | --- | --- | --- |
 | `INPUT_PATHS` | required | One or more input video files. Multiple inputs run as a batch. |
 | `-o, --output PATH` | `<input>_edited.ext` | Output video path for one input, or output directory for a batch. |
-| `--overwrite` | off | Replace an existing output video intentionally. |
+| `--overwrite` | off | Replace existing video, timeline, and selected subtitle artifacts intentionally. |
 | `--dry-run` | off | Analyze, build the timeline, and write sidecars without rendering. |
 
-QuickEdit refuses to replace an existing output unless `--overwrite` is set.
-In batch mode, a failed file is reported and the remaining inputs continue.
+QuickEdit refuses to replace any generated artifact unless `--overwrite` is
+set. In batch mode, a failed file is reported and the remaining inputs
+continue, then the command exits non-zero. Inputs that resolve to the same
+batch destination are rejected before analysis.
 
 ## Configuration and environment
 
@@ -33,6 +35,8 @@ In batch mode, a failed file is reported and the remaining inputs continue.
 Every CLI option can also be set as a `QUICKEDIT_` environment variable by
 uppercasing the option name and replacing dashes with underscores. For example,
 `QUICKEDIT_WHISPER_MODEL=small` sets the same value as `--whisper-model small`.
+
+Unknown configuration keys are rejected instead of being silently ignored.
 
 ## Configuration file
 
@@ -100,6 +104,7 @@ transcribed word timestamps, so it requires transcription.
 | `--prompt-file PATH` | none | Read custom editing instructions from a file. |
 | `--confidence FLOAT` | `0.7` | Minimum confidence for LLM-suggested cuts from `0.0` to `1.0`. |
 | `--silent-segment-min-duration FLOAT` | `0.5` | Minimum silence duration, in seconds, before a silent segment is classified for LLM context. |
+| `--silent-segment-active-frame-ratio FLOAT` | `0.5` | Fraction of motion-positive frames required to mark a silent segment as visually active for LLM context. |
 
 For Anthropic models, set `ANTHROPIC_API_KEY`. For Gemini models, set
 `GOOGLE_API_KEY` or `GEMINI_API_KEY`.

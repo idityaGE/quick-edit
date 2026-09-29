@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -22,6 +23,40 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+FFMPEG_MOTION_TIMEOUT_SECONDS = 3600
+PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
+DIAGNOSTIC_LIMIT = 2000
+
+
+def _diagnostic_tail(value: bytes | bytearray) -> str:
+    """Decode a bounded tail of FFmpeg diagnostics."""
+    return bytes(value[-DIAGNOSTIC_LIMIT:]).decode(errors="replace").strip()
+
+
+def _stop_process(proc: subprocess.Popen[bytes]) -> None:
+    """Terminate a child process and make bounded attempts to reap it."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    try:
+        proc.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # Closing the pipes in the caller is still required if the OS has not
+        # completed teardown after an uncatchable kill.
+        return
+
+
+def _close_process_pipes(proc: subprocess.Popen[bytes]) -> None:
+    if proc.stdout is not None:
+        proc.stdout.close()
+    if proc.stderr is not None:
+        proc.stderr.close()
 
 
 @dataclass
@@ -121,10 +156,15 @@ def _analyze_motion_opencv(
     cap = cv2.VideoCapture(video_path)
 
     if not cap.isOpened():
+        cap.release()
         raise RuntimeError(f"Cannot open video: {video_path}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    except BaseException:
+        cap.release()
+        raise
 
     # Gaussian kernel size must be odd
     ksize = blur_sigma * 2 + 1 if blur_sigma > 0 else 0
@@ -168,13 +208,16 @@ def _analyze_motion_opencv(
         if executor is None:
             gray_frames = [process_gray(frame) for _, frame in batch]
         else:
-            gray_frames = list(executor.map(process_gray, [frame for _, frame in batch]))
+            gray_frames = list(
+                executor.map(process_gray, [frame for _, frame in batch])
+            )
         for (frame_number, _), gray in zip(batch, gray_frames, strict=True):
             add_motion_value(frame_number, gray)
 
     frame_idx = 0
-    executor = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+    executor: ThreadPoolExecutor | None = None
     try:
+        executor = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -198,32 +241,33 @@ def _analyze_motion_opencv(
 
             frame_idx += 1
         flush_pending(executor, pending)
+
+        actual_total = frame_idx
+
+        # Interpolate if we skipped frames
+        if frame_skip > 1:
+            motion_values = _interpolate_motion_values(analyzed_frames, actual_total)
+        else:
+            motion_values = np.zeros(actual_total, dtype=np.float32)
+            for idx, val in analyzed_frames:
+                if idx < actual_total:
+                    motion_values[idx] = val
+
+        # Apply threshold to get bool array
+        activity_frames = motion_values >= threshold
+
+        return MotionResult(
+            motion_values=motion_values,
+            activity_frames=activity_frames,
+            fps=fps,
+            total_frames=actual_total,
+        )
     finally:
-        if executor is not None:
-            executor.shutdown()
-
-    cap.release()
-
-    actual_total = frame_idx
-
-    # Interpolate if we skipped frames
-    if frame_skip > 1:
-        motion_values = _interpolate_motion_values(analyzed_frames, actual_total)
-    else:
-        motion_values = np.zeros(actual_total, dtype=np.float32)
-        for idx, val in analyzed_frames:
-            if idx < actual_total:
-                motion_values[idx] = val
-
-    # Apply threshold to get bool array
-    activity_frames = motion_values >= threshold
-
-    return MotionResult(
-        motion_values=motion_values,
-        activity_frames=activity_frames,
-        fps=fps,
-        total_frames=actual_total,
-    )
+        try:
+            if executor is not None:
+                executor.shutdown()
+        finally:
+            cap.release()
 
 
 def _preprocess_frame(
@@ -271,22 +315,22 @@ def _analyze_motion_ffmpeg(
     """Decode scaled grayscale frames with FFmpeg, then compute frame diffs."""
     video_path = str(video_path)
     cap = cv2.VideoCapture(video_path)
+    try:
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
 
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        cap.release()
 
     if width <= 0 or height <= 0:
         raise RuntimeError(f"Cannot read video dimensions: {video_path}")
 
     out_w = min(width, scale_width)
-    out_h = int(height * (out_w / width)) if width > 0 else height
-    out_h = max(1, out_h)
+    out_h = max(1, int(height * (out_w / width)))
     frame_size = out_w * out_h
     ksize = blur_sigma * 2 + 1 if blur_sigma > 0 else 0
     log_interval = max(1, total_frames // 10)
@@ -311,49 +355,116 @@ def _analyze_motion_ffmpeg(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if proc.stdout is None:
-        raise RuntimeError("FFmpeg stdout pipe was not created")
+    if proc.stdout is None or proc.stderr is None:
+        _stop_process(proc)
+        _close_process_pipes(proc)
+        raise RuntimeError("FFmpeg output pipes were not created")
+
+    stderr_tail = bytearray()
+
+    def drain_stderr() -> None:
+        assert proc.stderr is not None
+        try:
+            while chunk := proc.stderr.read(8192):
+                stderr_tail.extend(chunk)
+                excess = len(stderr_tail) - DIAGNOSTIC_LIMIT
+                if excess > 0:
+                    del stderr_tail[:excess]
+        except (OSError, ValueError):
+            # Process cleanup may close the pipe to unblock this reader.
+            return
+
+    stderr_thread = threading.Thread(
+        target=drain_stderr,
+        name="quickedit-ffmpeg-stderr",
+        daemon=True,
+    )
+    stderr_thread.start()
+
+    timed_out = threading.Event()
+    process_lock = threading.Lock()
+
+    def stop_for_timeout() -> None:
+        with process_lock:
+            if proc.poll() is not None:
+                return
+            timed_out.set()
+            _stop_process(proc)
+
+    timeout_timer = threading.Timer(
+        FFMPEG_MOTION_TIMEOUT_SECONDS,
+        stop_for_timeout,
+    )
+    timeout_timer.daemon = True
+    timeout_timer.start()
 
     analyzed_frames: list[tuple[int, float]] = []
     prev_gray = None
     frame_idx = 0
 
-    while True:
-        raw = proc.stdout.read(frame_size)
-        if not raw:
-            break
-        if len(raw) != frame_size:
-            proc.kill()
-            raise RuntimeError("FFmpeg returned a partial raw video frame")
+    try:
+        while True:
+            raw = proc.stdout.read(frame_size)
+            if not raw:
+                break
+            if len(raw) != frame_size:
+                raise RuntimeError("FFmpeg returned a partial raw video frame")
 
-        if frame_skip <= 1 or frame_idx % frame_skip == 0:
-            if frame_idx > 0 and frame_idx % log_interval == 0:
-                _report_motion_progress(frame_idx, total_frames, progress_callback)
+            if frame_skip <= 1 or frame_idx % frame_skip == 0:
+                if frame_idx > 0 and frame_idx % log_interval == 0:
+                    _report_motion_progress(
+                        frame_idx,
+                        total_frames,
+                        progress_callback,
+                    )
 
-            gray = np.frombuffer(raw, dtype=np.uint8).reshape((out_h, out_w))
-            if blur_sigma > 0:
-                gray = cv2.GaussianBlur(gray, (ksize, ksize), blur_sigma)
+                gray = np.frombuffer(raw, dtype=np.uint8).reshape((out_h, out_w))
+                if blur_sigma > 0:
+                    gray = cv2.GaussianBlur(gray, (ksize, ksize), blur_sigma)
 
-            if prev_gray is not None:
-                diff = cv2.absdiff(gray, prev_gray)
-                _, binary_diff = cv2.threshold(
-                    diff, pixel_threshold, 255, cv2.THRESH_BINARY
-                )
-                changed = np.count_nonzero(binary_diff)
-                total = binary_diff.size
-                motion_value = changed / total
-            else:
-                motion_value = 0.0
+                if prev_gray is not None:
+                    diff = cv2.absdiff(gray, prev_gray)
+                    _, binary_diff = cv2.threshold(
+                        diff,
+                        pixel_threshold,
+                        255,
+                        cv2.THRESH_BINARY,
+                    )
+                    motion_value = np.count_nonzero(binary_diff) / binary_diff.size
+                else:
+                    motion_value = 0.0
 
-            analyzed_frames.append((frame_idx, motion_value))
-            prev_gray = gray
+                analyzed_frames.append((frame_idx, motion_value))
+                prev_gray = gray
 
-        frame_idx += 1
+            frame_idx += 1
 
-    stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
-    returncode = proc.wait()
-    if returncode != 0:
-        raise RuntimeError(f"FFmpeg motion decode failed: {stderr.strip()}")
+        returncode = proc.wait()
+        if timed_out.is_set():
+            detail = _diagnostic_tail(stderr_tail)
+            message = (
+                "FFmpeg motion decode timed out after "
+                f"{FFMPEG_MOTION_TIMEOUT_SECONDS} seconds"
+            )
+            if detail:
+                message = f"{message}: {detail}"
+            raise RuntimeError(message)
+        if returncode != 0:
+            detail = _diagnostic_tail(stderr_tail)
+            message = f"FFmpeg motion decode failed (exit {returncode})"
+            if detail:
+                message = f"{message}: {detail}"
+            raise RuntimeError(message)
+    finally:
+        timeout_timer.cancel()
+        try:
+            with process_lock:
+                _stop_process(proc)
+        finally:
+            proc.stdout.close()
+            stderr_thread.join(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            proc.stderr.close()
+            stderr_thread.join(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
 
     actual_total = frame_idx
 

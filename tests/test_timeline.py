@@ -339,6 +339,64 @@ class TestMergeTimelines:
         # Total clips: 1 + 2 + 1 = 4
         assert len(result.clips) == 4
 
+    def test_merge_timelines_nested_cuts_never_restore_content(self):
+        """A nested cut cannot move the split cursor backward."""
+        base = Timeline(
+            source="/test.mp4",
+            fps=30.0,
+            duration=10.0,
+            clips=[
+                Clip(
+                    source="/test.mp4",
+                    src_start=0.0,
+                    src_end=10.0,
+                    dst_start=0.0,
+                    duration=10.0,
+                )
+            ],
+        )
+
+        result = merge_timelines(
+            base,
+            [
+                CutSegment(src_start=2.0, src_end=8.0),
+                CutSegment(src_start=4.0, src_end=6.0),
+            ],
+        )
+
+        assert [
+            (clip.src_start, clip.src_end, clip.dst_start) for clip in result.clips
+        ] == [(0.0, 2.0, 0.0), (8.0, 10.0, 2.0)]
+
+    def test_merge_timelines_touching_cut_boundaries_form_one_gap(self):
+        """Cuts sharing an exact boundary do not create an empty clip."""
+        base = Timeline(
+            source="/test.mp4",
+            fps=30.0,
+            duration=10.0,
+            clips=[
+                Clip(
+                    source="/test.mp4",
+                    src_start=0.0,
+                    src_end=10.0,
+                    dst_start=0.0,
+                    duration=10.0,
+                )
+            ],
+        )
+
+        result = merge_timelines(
+            base,
+            [
+                CutSegment(src_start=4.0, src_end=6.0),
+                CutSegment(src_start=2.0, src_end=4.0),
+            ],
+        )
+
+        assert [
+            (clip.src_start, clip.src_end, clip.dst_start) for clip in result.clips
+        ] == [(0.0, 2.0, 0.0), (6.0, 10.0, 2.0)]
+
     def test_merge_timelines_recalculates_dst_start(self, sample_timeline):
         """dst_start is recalculated after merge."""
         llm_cuts = [

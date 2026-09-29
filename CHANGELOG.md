@@ -19,6 +19,19 @@
   script for comparing real screen recordings.
 - Made the FFmpeg motion backend the default after benchmarks showed matching
   activity detection with much faster analysis on long screen recordings.
+- Fixed nested LLM cut merging, separated silent-motion frame-ratio semantics,
+  and report true wall-clock pipeline duration.
+- Made batch failures exit non-zero, reject duplicate destinations and malformed
+  configuration before analysis, and protect every generated sidecar with
+  `--overwrite`.
+- Isolated and versioned per-video caches so clearing one input cannot delete a
+  neighboring video's analysis.
+- Added bounded FFmpeg/FFprobe execution and deterministic process cleanup, and
+  changed large-timeline rendering to one codec-safe final encode.
+- Publish timeline and subtitle sidecars atomically only after successful
+  processing.
+- Added Python 3.11/3.13 CI, package and documentation builds, dependency
+  audits, and targeted regression coverage for the corrected paths.
 - Added MIT licensing, contribution/community/security policies, issue forms,
   a public roadmap, and the Astro/Starlight documentation site.
 

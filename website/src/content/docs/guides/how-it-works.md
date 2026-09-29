@@ -58,25 +58,29 @@ converted into timeline clips and cuts.
 
 ## Rendering pipeline
 
-QuickEdit writes subtitles before rendering so FFmpeg can burn them into the
-video. A single kept clip uses a simple FFmpeg trim. Multiple clips use FFmpeg
-concat rendering, with an automatic strategy switch for timelines with many
-clips. The final render is written to a temporary output and then moved into
-place when FFmpeg succeeds.
+QuickEdit generates subtitles under temporary names so FFmpeg can burn them
+into the video without publishing partial sidecars. A single kept clip uses a
+simple FFmpeg trim. Multiple clips use concat rendering, with an automatic
+strategy switch for timelines with many clips. The large-timeline strategy
+describes source ranges to one final FFmpeg encode instead of forcing the
+selected codec through an MPEG-TS intermediate. The final video, timeline, and
+subtitle are moved into place only after rendering succeeds.
 
 ## Cache strategy
 
 Expensive analysis results are cached in `.quickedit_cache/` beside the input
-video. Cache keys include the input path, modification time, size, analysis
-method, and relevant parameters.
+video. Each source has an isolated schema-versioned namespace. Cache keys
+include the input path, modification time, size, analysis method, and relevant
+parameters.
 
 Changing render settings such as `--codec` or `--crf` does not invalidate speech
 or motion analysis. Changing motion settings such as `--motion-threshold`,
 `--motion-pixel-threshold`, `--motion-frame-skip`, or `--motion-backend` creates
 a different motion cache entry.
 
-Use `--clear-cache` when you want to discard cached analysis for an input. Use
-`--no-cache` when a run should avoid both cache reads and cache writes.
+Use `--clear-cache` when you want to discard cached analysis for one input
+without clearing sibling-video entries. Use `--no-cache` when a run should avoid
+both cache reads and cache writes.
 
 ## Dependency roles
 

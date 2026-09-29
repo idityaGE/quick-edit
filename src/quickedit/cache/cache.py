@@ -26,13 +26,30 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 CACHE_DIR_NAME = ".quickedit_cache"
+CACHE_SCHEMA_VERSION = 1
+_ENTRY_PREFIX = "entry-"
+
+
+def _source_namespace(video_path: str | Path) -> str:
+    """Return a stable namespace for one source path."""
+    resolved_path = str(Path(video_path).resolve())
+    return hashlib.sha256(resolved_path.encode()).hexdigest()
+
+
+def _source_cache_dir(video_path: str | Path) -> Path:
+    video_path = Path(video_path)
+    return video_path.parent / CACHE_DIR_NAME / _source_namespace(video_path)
+
+
+def _cache_dir(video_path: str | Path) -> Path:
+    """Return the current cache directory without creating it."""
+    return _source_cache_dir(video_path) / f"v{CACHE_SCHEMA_VERSION}"
 
 
 def get_cache_dir(video_path: str | Path) -> Path:
-    """Get or create cache directory next to the video file."""
-    video_dir = Path(video_path).parent
-    cache_dir = video_dir / CACHE_DIR_NAME
-    cache_dir.mkdir(exist_ok=True)
+    """Get or create the current cache directory for a source video."""
+    cache_dir = _cache_dir(video_path)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
 
@@ -47,15 +64,29 @@ def _cache_key(video_path: str | Path, method: str, params: dict) -> str:
     stat = video_path.stat()
 
     identity = {
+        "schema_version": CACHE_SCHEMA_VERSION,
         "path": str(video_path.resolve()),
-        "mtime": stat.st_mtime,
+        "mtime_ns": stat.st_mtime_ns,
         "size": stat.st_size,
         "method": method,
         "params": params,
     }
 
-    key_str = json.dumps(identity, sort_keys=True)
+    key_str = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(key_str.encode()).hexdigest()
+
+
+def _cache_file(video_path: str | Path, method: str, params: dict, suffix: str) -> Path:
+    key = _cache_key(video_path, method, params)
+    return _cache_dir(video_path) / f"{_ENTRY_PREFIX}{key}{suffix}"
+
+
+def _discard_corrupt(cache_file: Path, error: Exception) -> None:
+    logger.warning(f"Failed to load cache {cache_file}: {error}")
+    try:
+        cache_file.unlink(missing_ok=True)
+    except OSError as cleanup_error:
+        logger.warning(f"Failed to remove corrupt cache {cache_file}: {cleanup_error}")
 
 
 def save_array(
@@ -66,11 +97,12 @@ def save_array(
 ) -> None:
     """Save a numpy array to cache."""
     cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
-    cache_file = cache_dir / f"{method}_{key}.npz"
+    cache_file = cache_dir / (
+        f"{_ENTRY_PREFIX}{_cache_key(video_path, method, params)}.npz"
+    )
 
     with tempfile.NamedTemporaryFile(
-        dir=cache_dir, prefix=f".{method}_", suffix=".npz", delete=False
+        dir=cache_dir, prefix=".entry-", suffix=".npz", delete=False
     ) as tmp:
         tmp_path = Path(tmp.name)
     try:
@@ -87,9 +119,7 @@ def load_array(
     params: dict,
 ) -> np.ndarray | None:
     """Load a cached numpy array. Returns None if not cached."""
-    cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
-    cache_file = cache_dir / f"{method}_{key}.npz"
+    cache_file = _cache_file(video_path, method, params, ".npz")
 
     if not cache_file.exists():
         return None
@@ -99,8 +129,8 @@ def load_array(
             result = data["data"]
         logger.debug(f"Loaded cached {method} from {cache_file}")
         return result
-    except Exception as e:
-        logger.warning(f"Failed to load cache {cache_file}: {e}")
+    except Exception as error:
+        _discard_corrupt(cache_file, error)
         return None
 
 
@@ -111,16 +141,23 @@ def save_json(
     data: Any,
 ) -> None:
     """Save JSON-serializable data to cache."""
+    serialized = json.dumps(data, indent=2, default=str)
     cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
-    cache_file = cache_dir / f"{method}_{key}.json"
+    cache_file = cache_dir / (
+        f"{_ENTRY_PREFIX}{_cache_key(video_path, method, params)}.json"
+    )
 
-    with tempfile.NamedTemporaryFile(
-        dir=cache_dir, prefix=f".{method}_", suffix=".json", mode="w", delete=False
-    ) as tmp:
-        tmp.write(json.dumps(data, indent=2, default=str))
-        tmp_path = Path(tmp.name)
+    tmp = tempfile.NamedTemporaryFile(
+        dir=cache_dir,
+        prefix=".entry-",
+        suffix=".json",
+        mode="w",
+        delete=False,
+    )
+    tmp_path = Path(tmp.name)
     try:
+        with tmp:
+            tmp.write(serialized)
         os.replace(tmp_path, cache_file)
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -133,9 +170,7 @@ def load_json(
     params: dict,
 ) -> Any | None:
     """Load cached JSON data. Returns None if not cached."""
-    cache_dir = get_cache_dir(video_path)
-    key = _cache_key(video_path, method, params)
-    cache_file = cache_dir / f"{method}_{key}.json"
+    cache_file = _cache_file(video_path, method, params, ".json")
 
     if not cache_file.exists():
         return None
@@ -144,18 +179,49 @@ def load_json(
         data = json.loads(cache_file.read_text())
         logger.debug(f"Loaded cached {method} from {cache_file}")
         return data
-    except Exception as e:
-        logger.warning(f"Failed to load cache {cache_file}: {e}")
+    except Exception as error:
+        _discard_corrupt(cache_file, error)
         return None
 
 
 def clear_cache(video_path: str | Path) -> int:
-    """Clear all cache files for a video. Returns number of files removed."""
-    cache_dir = get_cache_dir(video_path)
+    """Clear all cache entries for a video. Returns number of files removed."""
+    source_cache_dir = _source_cache_dir(video_path)
+    if source_cache_dir.is_symlink() or not source_cache_dir.is_dir():
+        return 0
+
     count = 0
-    for f in cache_dir.iterdir():
-        if f.suffix in (".npz", ".json"):
-            f.unlink()
-            count += 1
-    logger.info(f"Cleared {count} cache files from {cache_dir}")
+    for version_dir in source_cache_dir.iterdir():
+        version_name = version_dir.name
+        if (
+            version_dir.is_symlink()
+            or not version_dir.is_dir()
+            or len(version_name) < 2
+            or version_name[0] != "v"
+            or not version_name[1:].isdigit()
+        ):
+            continue
+        for cache_file in version_dir.iterdir():
+            digest = cache_file.stem.removeprefix(_ENTRY_PREFIX)
+            if (
+                cache_file.is_file()
+                and cache_file.stem.startswith(_ENTRY_PREFIX)
+                and len(digest) == 64
+                and all(character in "0123456789abcdef" for character in digest)
+                and cache_file.suffix in {".npz", ".json"}
+            ):
+                cache_file.unlink()
+                count += 1
+        try:
+            version_dir.rmdir()
+        except OSError:
+            pass
+
+    try:
+        source_cache_dir.rmdir()
+        source_cache_dir.parent.rmdir()
+    except OSError:
+        pass
+
+    logger.info(f"Cleared {count} cache files for {video_path}")
     return count

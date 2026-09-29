@@ -17,7 +17,6 @@ import os
 import subprocess
 import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from quickedit.timeline.timeline import Clip, Timeline
@@ -26,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 # Threshold for switching render strategies
 CLIP_THRESHOLD_FOR_SEGMENT_RENDER = 50
+RENDER_STRATEGIES = frozenset({"auto", "filter_complex", "segments"})
+FFMPEG_TIMEOUT_SECONDS = 3600
+DIAGNOSTIC_LIMIT = 2000
 
 
 def render_video(
@@ -53,12 +55,17 @@ def render_video(
         audio_bitrate: Audio bitrate.
         render_strategy: "auto" (default) - picks best strategy based on clip count
                         "filter_complex" - single ffmpeg with filter_complex
-                        "segments" - render segments then concat
+                        "segments" - concat demuxer optimized for many clips
 
     Returns:
         Path to the output file.
     """
     output_path = Path(output_path)
+    if render_strategy not in RENDER_STRATEGIES:
+        choices = ", ".join(sorted(RENDER_STRATEGIES))
+        raise ValueError(
+            f"Unknown render strategy {render_strategy!r}; expected one of: {choices}"
+        )
 
     if not output_path.parent.exists():
         raise ValueError(f"Output directory does not exist: {output_path.parent}")
@@ -270,120 +277,75 @@ def render_segments_then_concat(
     audio_codec: str = "aac",
     audio_bitrate: str = "192k",
 ) -> Path:
-    """
-    Alternative rendering strategy: extract each segment separately,
-    then concat with the concat demuxer. Better for very long videos
-    with many clips, as it avoids huge filter_complex strings.
+    """Render many clips with the concat demuxer and one final encode.
 
-    1. Extract each clip as a separate file (stream copy when possible)
-    2. Write a concat list file
-    3. Concat all segments
-    4. Optionally burn in subtitles
+    The demuxer references source ranges directly, avoiding codec-dependent
+    MPEG-TS intermediates. Video (including optional subtitles) and audio are
+    each encoded exactly once into the requested output container.
     """
     output_path = Path(output_path)
 
     with tempfile.TemporaryDirectory(prefix="quickedit_") as tmpdir:
-        tmpdir = Path(tmpdir)
-        segment_paths: list[Path | None] = []
+        concat_path = Path(tmpdir) / "clips.ffconcat"
+        concat_lines = ["ffconcat version 1.0"]
+        for clip in timeline.clips:
+            source = str(Path(clip.source).resolve())
+            if "\n" in source or "\r" in source:
+                raise ValueError(
+                    "Source paths containing line breaks cannot be represented "
+                    f"in an FFconcat file: {clip.source!r}"
+                )
+            source = source.replace("'", "'\\''")
+            concat_lines.extend(
+                [
+                    f"file '{source}'",
+                    f"inpoint {clip.src_start:.6f}",
+                    f"outpoint {clip.src_end:.6f}",
+                    f"duration {clip.src_duration:.6f}",
+                ]
+            )
+        concat_path.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
 
-        # Step 1: Extract each clip (parallel)
-        n_clips = len(timeline.clips)
-        max_workers = min(os.cpu_count() or 2, 4)
-        logger.info(
-            f"Extracting {n_clips} segments using {max_workers} parallel workers"
-        )
-        segment_paths = [None] * n_clips
-        completed = 0
-
-        def _extract_segment(i: int, clip: Clip) -> tuple[int, Path]:
-            seg_path = tmpdir / f"seg_{i:04d}.ts"
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                str(clip.src_start),
-                "-to",
-                str(clip.src_end),
-                "-i",
-                clip.source,
-                "-c:v",
-                codec,
-                "-crf",
-                str(crf),
-                "-preset",
-                preset,
-                "-c:a",
-                audio_codec,
-                "-b:a",
-                audio_bitrate,
-                # Use mpegts for seamless concatenation
-                "-f",
-                "mpegts",
-                str(seg_path),
-            ]
-            _run_ffmpeg(cmd, quiet=True)
-            return i, seg_path
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_extract_segment, i, clip): i
-                for i, clip in enumerate(timeline.clips)
-            }
-            for future in as_completed(futures):
-                i, seg_path = future.result()
-                segment_paths[i] = seg_path
-                completed += 1
-                if completed % 10 == 0 or completed == n_clips:
-                    logger.info(f"Extracted segment {completed}/{n_clips}")
-
-        # Step 2: Concat using concat protocol
-        if any(path is None for path in segment_paths):
-            raise RuntimeError("FFmpeg segment extraction did not produce every clip")
-        concat_input = "|".join(str(path) for path in segment_paths if path is not None)
+        video_filters = ["select=concatdec_select", "setpts=PTS-STARTPTS"]
+        if subtitle_path:
+            sub_path = _escape_subtitle_path(str(subtitle_path))
+            video_filters.append(f"subtitles='{sub_path}'")
 
         cmd = [
             "ffmpeg",
             "-y",
+            "-copyts",
+            "-segment_time_metadata",
+            "1",
+            "-vsync",
+            "0",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
             "-i",
-            f"concat:{concat_input}",
-            "-c",
-            "copy",
+            str(concat_path),
+            "-vf",
+            ",".join(video_filters),
+            "-af",
+            "aselect=concatdec_select,asetpts=PTS-STARTPTS",
+            "-c:v",
+            codec,
+            "-crf",
+            str(crf),
+            "-preset",
+            preset,
+            "-c:a",
+            audio_codec,
+            "-b:a",
+            audio_bitrate,
+            "-movflags",
+            "+faststart",
+            str(output_path),
         ]
-
-        # Step 3: Add subtitles if needed (requires re-encoding video)
-        if subtitle_path:
-            sub_path = _escape_subtitle_path(str(subtitle_path))
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                f"concat:{concat_input}",
-                "-vf",
-                f"subtitles='{sub_path}'",
-                "-c:v",
-                codec,
-                "-crf",
-                str(crf),
-                "-preset",
-                preset,
-                "-c:a",
-                "copy",
-            ]
-
-        cmd.extend(
-            [
-                "-movflags",
-                "+faststart",
-                str(output_path),
-            ]
-        )
-
         _run_ffmpeg(cmd)
 
     return output_path
-
-
-FFMPEG_TIMEOUT_SECONDS = 3600  # 1 hour max for long renders
 
 
 def _escape_subtitle_path(path: str) -> str:
@@ -400,21 +362,36 @@ def _escape_subtitle_path(path: str) -> str:
 
 
 def _run_ffmpeg(cmd: list[str], quiet: bool = False) -> subprocess.CompletedProcess:
-    """Run an FFmpeg command and handle errors."""
+    """Run an FFmpeg command with bounded execution and diagnostics."""
     if not quiet:
         logger.info(f"Running: {' '.join(cmd[:6])}...")
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=FFMPEG_TIMEOUT_SECONDS,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        detail = stderr.strip()[-DIAGNOSTIC_LIMIT:]
+        message = f"FFmpeg timed out after {FFMPEG_TIMEOUT_SECONDS} seconds"
+        if detail:
+            message = f"{message}: {detail}"
+        raise RuntimeError(message) from exc
 
     if result.returncode != 0:
-        logger.error(f"FFmpeg failed:\n{result.stderr[-1000:]}")
-        raise RuntimeError(
-            f"FFmpeg failed (exit {result.returncode}): {result.stderr[-500:]}"
-        )
+        stderr = result.stderr or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        detail = stderr.strip()[-DIAGNOSTIC_LIMIT:]
+        logger.error(f"FFmpeg failed:\n{detail}")
+        message = f"FFmpeg failed (exit {result.returncode})"
+        if detail:
+            message = f"{message}: {detail}"
+        raise RuntimeError(message)
 
     return result

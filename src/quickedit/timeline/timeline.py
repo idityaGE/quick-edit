@@ -227,9 +227,13 @@ def merge_timelines(base: Timeline, llm_cuts: list[CutSegment]) -> Timeline:
     if not llm_cuts:
         return base
 
-    # Sort LLM cuts by start time
-    llm_cuts = sorted(llm_cuts, key=lambda c: c.src_start)
-
+    # Sort valid LLM cuts by source position. The cursor below must only move
+    # forward: overlapping or nested cuts represent a union, not independent
+    # splits that can restore an already removed interval.
+    sorted_cuts = sorted(
+        (cut for cut in llm_cuts if cut.src_end > cut.src_start),
+        key=lambda cut: (cut.src_start, cut.src_end),
+    )
     new_clips: list[Clip] = []
 
     for clip in base.clips:
@@ -238,7 +242,7 @@ def merge_timelines(base: Timeline, llm_cuts: list[CutSegment]) -> Timeline:
         # multiple clips, and a per-clip scan is fast for typical counts.
         relevant_cuts = [
             cut
-            for cut in llm_cuts
+            for cut in sorted_cuts
             if cut.src_end > clip.src_start and cut.src_start < clip.src_end
         ]
 
@@ -266,7 +270,7 @@ def merge_timelines(base: Timeline, llm_cuts: list[CutSegment]) -> Timeline:
                     )
                 )
 
-            cursor = cut_end
+            cursor = max(cursor, cut_end)
 
         # Keep the part after the last cut
         if cursor < clip.src_end:
@@ -288,8 +292,8 @@ def merge_timelines(base: Timeline, llm_cuts: list[CutSegment]) -> Timeline:
         dst_cursor += clip.duration
 
     # Rebuild the cuts list
-    all_cuts = list(base.cuts) + llm_cuts
-    all_cuts.sort(key=lambda c: c.src_start)
+    all_cuts = list(base.cuts) + sorted_cuts
+    all_cuts.sort(key=lambda cut: (cut.src_start, cut.src_end))
 
     result = Timeline(
         source=base.source,

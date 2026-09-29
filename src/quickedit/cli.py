@@ -28,12 +28,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 
 import click
+import numpy as np
 
 from quickedit import __version__
+from quickedit.analyze.combine import DetectionArrays, evaluate_expression
 from quickedit.cache import cache
 from quickedit.edit.llm import LLMProvider, _detect_provider
 from quickedit.pipeline import PipelineConfig, run_pipeline
@@ -43,20 +44,79 @@ from quickedit.progress import ProgressReporter
 def _load_config_callback(
     ctx: click.Context, param: click.Parameter, value: str | None
 ) -> str | None:
-    """Eager callback: load JSON config file into Click's default_map before other options resolve."""
+    """Eager callback: load JSON config file into Click's default_map."""
     if not value or ctx.resilient_parsing:
         return value
     try:
         with open(value) as f:
             data = json.load(f)
-        ctx.default_map = ctx.default_map or {}
-        ctx.default_map.update(data)
     except (OSError, json.JSONDecodeError) as e:
         raise click.BadParameter(f"Cannot load config file: {e}", param=param)
+
+    if not isinstance(data, dict):
+        raise click.BadParameter("Config file must contain a JSON object", param=param)
+
+    option_names = {
+        option.name
+        for option in ctx.command.params
+        if isinstance(option, click.Option)
+        and option.expose_value
+        and option.name is not None
+    }
+    unknown = sorted(set(data) - option_names)
+    if unknown:
+        keys = ", ".join(unknown)
+        raise click.BadParameter(
+            f"Unknown config key(s): {keys}. "
+            "Keys must match CLI option parameter names (use underscores).",
+            param=param,
+        )
+
+    ctx.default_map = ctx.default_map or {}
+    ctx.default_map.update(data)
     return value
 
 
-def _validate_config(config: PipelineConfig) -> None:
+def _validate_combine_expression(expression: str) -> None:
+    """Validate a combine expression using the analysis evaluator."""
+    if ":" in expression:
+        operation, operand_text = expression.split(":", 1)
+        operands = operand_text.split(",")
+        normalized_operation = operation.strip().lower()
+        if normalized_operation in {"or", "and", "xor"} and len(operands) < 2:
+            raise ValueError(f"'{normalized_operation}' takes at least two operands")
+
+    probe = np.zeros(1, dtype=bool)
+    detections = DetectionArrays(
+        arrays={"speech": probe, "motion": probe, "words": probe},
+        fps=1.0,
+        total_frames=1,
+    )
+    try:
+        evaluate_expression(expression, detections)
+    except (KeyError, TypeError, ValueError) as error:
+        message = f"Invalid combine expression {expression!r}: {error}"
+        raise ValueError(message) from error
+
+
+def _output_artifacts(
+    output_path: str, *, dry_run: bool, subtitle_style: str
+) -> list[Path]:
+    """Return every artifact this invocation may generate."""
+    output = Path(output_path)
+    artifacts = [output.with_suffix(".timeline.json")]
+    if not dry_run:
+        artifacts.insert(0, output)
+    if subtitle_style != "none":
+        artifacts.append(
+            output.with_suffix(".ass" if subtitle_style == "fancy" else ".srt")
+        )
+    return artifacts
+
+
+def _validate_config(
+    config: PipelineConfig, *, require_output_directory: bool = True
+) -> None:
     """Validate configuration values and raise ValueError on invalid input."""
     errors: list[str] = []
 
@@ -94,6 +154,11 @@ def _validate_config(config: PipelineConfig) -> None:
         errors.append(
             f"silent_segment_min_duration must be >= 0, got {config.silent_segment_min_duration}"
         )
+    if not 0.0 <= config.silent_segment_active_frame_ratio_threshold <= 1.0:
+        errors.append(
+            "silent_segment_active_frame_ratio must be 0.0-1.0, got "
+            f"{config.silent_segment_active_frame_ratio_threshold}"
+        )
     if config.subtitle_size < 1:
         errors.append(f"subtitle_size must be >= 1, got {config.subtitle_size}")
     if config.subtitle_silence_gap < 0:
@@ -110,7 +175,7 @@ def _validate_config(config: PipelineConfig) -> None:
         errors.append(f"Input path must be a file: {input_path}")
     if output_path and input_path == output_path:
         errors.append("Output path cannot be the same as input path")
-    if output_path and not output_path.parent.is_dir():
+    if require_output_directory and output_path and not output_path.parent.is_dir():
         errors.append(f"Output directory does not exist: {output_path.parent}")
 
     if config.use_llm:
@@ -137,7 +202,12 @@ def _validate_config(config: PipelineConfig) -> None:
 
 @click.version_option(version=__version__, prog_name="quickedit")
 @click.command(context_settings={"auto_envvar_prefix": "QUICKEDIT"})
-@click.argument("input_paths", nargs=-1, required=True, type=click.Path(exists=True))
+@click.argument(
+    "input_paths",
+    nargs=-1,
+    required=True,
+    type=click.Path(exists=True, file_okay=True, dir_okay=False),
+)
 @click.option(
     "-o",
     "--output",
@@ -268,6 +338,12 @@ def _validate_config(config: PipelineConfig) -> None:
     type=float,
     help="Min silence duration (seconds) for LLM classification. Default: 0.5.",
 )
+@click.option(
+    "--silent-segment-active-frame-ratio",
+    default=0.5,
+    type=float,
+    help="Min active-frame ratio for silent-segment visual activity (0.0-1.0).",
+)
 # Subtitle options
 @click.option(
     "--subtitle-style",
@@ -325,7 +401,7 @@ def _validate_config(config: PipelineConfig) -> None:
 @click.option(
     "--overwrite",
     is_flag=True,
-    help="Allow replacing an existing output video.",
+    help="Allow replacing existing generated artifacts.",
 )
 @click.option(
     "--dry-run",
@@ -357,6 +433,7 @@ def main(
     prompt_file: str | None,
     confidence: float,
     silent_segment_min_duration: float,
+    silent_segment_active_frame_ratio: float,
     subtitle_style: str,
     subtitle_font: str,
     subtitle_size: int,
@@ -403,52 +480,98 @@ def main(
         "float16" if device == "cuda" else "int8"
     )
 
-    # Resolve output path for batch mode
     batch_mode = len(input_paths) > 1
-    output_dir = None
-    if batch_mode and output_path:
-        # In batch mode, -o specifies an output directory
-        output_dir = Path(output_path)
-        output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(output_path) if batch_mode and output_path else None
 
-    click.echo("QuickEdit - AI Video Editor")
-    click.echo("=" * 40)
-    if batch_mode:
-        click.echo(f"Batch processing {len(input_paths)} files\n")
+    try:
+        _validate_combine_expression(combine_expr)
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
 
-    all_results = []
-    failed = []
+    if output_dir is not None and output_dir.exists() and not output_dir.is_dir():
+        raise click.UsageError(f"Batch output path is not a directory: {output_dir}")
 
-    for file_idx, input_path in enumerate(input_paths, 1):
-        if batch_mode:
-            click.echo(f"\n{'─' * 40}")
-            click.echo(f"[{file_idx}/{len(input_paths)}] {Path(input_path).name}")
-            click.echo(f"{'─' * 40}")
-
-        # Determine output path for this file
-        if batch_mode and output_dir:
+    destinations: list[tuple[str, str]] = []
+    for input_path in input_paths:
+        input_file = Path(input_path)
+        if output_dir is not None:
             file_output = str(
-                output_dir
-                / Path(input_path).with_stem(Path(input_path).stem + "_edited").name
+                output_dir / input_file.with_stem(input_file.stem + "_edited").name
             )
         elif not batch_mode and output_path:
             file_output = output_path
         else:
-            input_file = Path(input_path)
             file_output = str(input_file.with_stem(input_file.stem + "_edited"))
+        destinations.append((input_path, file_output))
 
-        output_file = Path(file_output)
-        if not dry_run and output_file.exists() and not overwrite:
-            message = (
-                f"Output already exists: {output_file}. Use --overwrite to replace it."
+    outputs_by_path: dict[Path, list[str]] = {}
+    for input_path, file_output in destinations:
+        for artifact in _output_artifacts(
+            file_output,
+            dry_run=False,
+            subtitle_style=subtitle_style,
+        ):
+            normalized_output = artifact.resolve()
+            outputs_by_path.setdefault(normalized_output, []).append(input_path)
+    duplicate_outputs = {
+        path: inputs for path, inputs in outputs_by_path.items() if len(inputs) > 1
+    }
+    if duplicate_outputs:
+        details = "; ".join(
+            f"{path} ({', '.join(inputs)})"
+            for path, inputs in duplicate_outputs.items()
+        )
+        raise click.UsageError(
+            f"Multiple inputs resolve to the same output destination: {details}"
+        )
+
+    resolved_inputs = {
+        Path(input_path).resolve(): input_path for input_path in input_paths
+    }
+    input_overlaps: dict[Path, list[str]] = {}
+    for input_path, file_output in destinations:
+        for artifact in _output_artifacts(
+            file_output,
+            dry_run=dry_run,
+            subtitle_style=subtitle_style,
+        ):
+            resolved_artifact = artifact.resolve()
+            if resolved_artifact in resolved_inputs:
+                input_overlaps.setdefault(resolved_artifact, []).append(input_path)
+    if input_overlaps:
+        details = "; ".join(
+            f"{path} (generated by {', '.join(generators)})"
+            for path, generators in input_overlaps.items()
+        )
+        raise click.UsageError(
+            "Generated artifacts overlap batch input files: "
+            f"{details}. Choose a different output directory."
+        )
+
+    existing_artifacts: list[Path] = []
+    if not overwrite:
+        for _, file_output in destinations:
+            existing_artifacts.extend(
+                artifact
+                for artifact in _output_artifacts(
+                    file_output,
+                    dry_run=dry_run,
+                    subtitle_style=subtitle_style,
+                )
+                if artifact.exists()
             )
-            if batch_mode:
-                failed.append((input_path, message))
-                click.echo(f"\nFailed: {message}", err=True)
-                continue
-            raise click.UsageError(message)
+    if existing_artifacts:
+        paths = "\n  ".join(str(path) for path in existing_artifacts)
+        raise click.UsageError(
+            f"Generated artifact(s) already exist:\n  {paths}\n"
+            "Use --overwrite to replace them."
+        )
 
-        # Build config for this file
+    configs: list[PipelineConfig] = []
+    output_directory_will_be_created = (
+        output_dir is not None and not output_dir.exists()
+    )
+    for input_path, file_output in destinations:
         config = PipelineConfig(
             input_path=input_path,
             output_path=file_output,
@@ -472,6 +595,9 @@ def main(
             custom_prompt=custom_prompt,
             llm_confidence_threshold=confidence,
             silent_segment_min_duration=silent_segment_min_duration,
+            silent_segment_active_frame_ratio_threshold=(
+                silent_segment_active_frame_ratio
+            ),
             subtitle_style=subtitle_style,
             subtitle_font=subtitle_font,
             subtitle_size=subtitle_size,
@@ -485,16 +611,39 @@ def main(
             dry_run=dry_run,
             verbose=verbose,
         )
-
-        # Validate configuration before running
         try:
-            _validate_config(config)
-        except ValueError as e:
-            click.echo(f"Error: {e}", err=True)
-            if batch_mode:
-                failed.append((input_path, str(e)))
-                continue
-            sys.exit(1)
+            _validate_config(
+                config,
+                require_output_directory=not output_directory_will_be_created,
+            )
+        except ValueError as error:
+            click.echo(f"Error: {error}", err=True)
+            raise click.exceptions.Exit(1) from error
+        configs.append(config)
+
+    if output_directory_will_be_created:
+        assert output_dir is not None
+        try:
+            output_dir.mkdir(parents=True)
+        except OSError as error:
+            raise click.UsageError(
+                f"Cannot create batch output directory {output_dir}: {error}"
+            ) from error
+
+    click.echo("QuickEdit - AI Video Editor")
+    click.echo("=" * 40)
+    if batch_mode:
+        click.echo(f"Batch processing {len(input_paths)} files\n")
+
+    all_results = []
+    failed: list[tuple[str, str]] = []
+
+    for file_idx, config in enumerate(configs, 1):
+        input_path = config.input_path
+        if batch_mode:
+            click.echo(f"\n{'─' * 40}")
+            click.echo(f"[{file_idx}/{len(input_paths)}] {Path(input_path).name}")
+            click.echo(f"{'─' * 40}")
 
         reporter = ProgressReporter()
         config.progress_callback = reporter.callback
@@ -507,20 +656,31 @@ def main(
                 result = run_pipeline(config)
             click.echo("\n" + "=" * 40)
             click.echo(result.summary())
-            click.echo(f"\nOutput: {result.output_path}")
+            if dry_run:
+                click.echo("\nDry run complete; no video was rendered.")
+                click.echo(
+                    f"Timeline: {Path(result.output_path).with_suffix('.timeline.json')}"
+                )
+                if subtitle_style != "none" and getattr(result, "transcript", None):
+                    subtitle_suffix = ".ass" if subtitle_style == "fancy" else ".srt"
+                    click.echo(
+                        f"Subtitles: "
+                        f"{Path(result.output_path).with_suffix(subtitle_suffix)}"
+                    )
+            else:
+                click.echo(f"\nOutput: {result.output_path}")
             all_results.append(result)
         except KeyboardInterrupt:
             click.echo("\nCancelled.")
-            sys.exit(1)
-        except Exception as e:
-            logging.error(f"Pipeline failed: {e}", exc_info=verbose)
+            raise click.exceptions.Exit(1)
+        except Exception as error:
+            logging.error(f"Pipeline failed: {error}", exc_info=verbose)
             if batch_mode:
-                failed.append((input_path, str(e)))
-                click.echo(f"\nFailed: {e}", err=True)
+                failed.append((input_path, str(error)))
+                click.echo(f"\nFailed: {error}", err=True)
                 continue
-            sys.exit(1)
+            raise click.exceptions.Exit(1) from error
 
-    # Batch summary
     if batch_mode:
         click.echo(f"\n{'═' * 40}")
         click.echo("Batch Summary")
@@ -528,10 +688,18 @@ def main(
         click.echo(f"  Processed: {len(all_results)}/{len(input_paths)}")
         if failed:
             click.echo(f"  Failed:    {len(failed)}")
-            for path, err in failed:
-                click.echo(f"    ✗ {Path(path).name}: {err}")
+            for path, error in failed:
+                click.echo(f"    ✗ {Path(path).name}: {error}")
         for result in all_results:
-            click.echo(f"  ✓ {Path(result.output_path).name}")
+            if dry_run:
+                timeline_name = (
+                    Path(result.output_path).with_suffix(".timeline.json").name
+                )
+                click.echo(f"  ✓ {timeline_name} (dry run; no video rendered)")
+            else:
+                click.echo(f"  ✓ {Path(result.output_path).name}")
+        if failed:
+            raise click.exceptions.Exit(1)
 
 
 if __name__ == "__main__":

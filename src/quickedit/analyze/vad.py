@@ -15,6 +15,49 @@ from pathlib import Path
 
 import numpy as np
 
+FFMPEG_TIMEOUT_SECONDS = 300
+FFPROBE_TIMEOUT_SECONDS = 30
+DIAGNOSTIC_LIMIT = 2000
+
+
+def _diagnostic_tail(value: str | bytes | None) -> str:
+    """Return a bounded, readable tail of subprocess diagnostics."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    return value.strip()[-DIAGNOSTIC_LIMIT:]
+
+
+def _run_media_command(
+    cmd: list[str],
+    *,
+    operation: str,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a bounded FFmpeg-family command with consistent errors."""
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        detail = _diagnostic_tail(exc.stderr)
+        message = f"{operation} timed out after {timeout} seconds"
+        if detail:
+            message = f"{message}: {detail}"
+        raise RuntimeError(message) from exc
+
+    if result.returncode != 0:
+        detail = _diagnostic_tail(result.stderr)
+        message = f"{operation} failed (exit {result.returncode})"
+        if detail:
+            message = f"{message}: {detail}"
+        raise RuntimeError(message)
+    return result
+
 
 @dataclass
 class VADResult:
@@ -45,9 +88,11 @@ def extract_audio(
         "1",  # mono
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg audio extraction failed: {result.stderr}")
+    _run_media_command(
+        cmd,
+        operation="FFmpeg audio extraction",
+        timeout=FFMPEG_TIMEOUT_SECONDS,
+    )
     return output_path
 
 
@@ -67,9 +112,11 @@ def get_video_info(video_path: str | Path) -> dict:
         "json",
         str(video_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFprobe failed: {result.stderr}")
+    result = _run_media_command(
+        cmd,
+        operation="FFprobe video inspection",
+        timeout=FFPROBE_TIMEOUT_SECONDS,
+    )
 
     data = json.loads(result.stdout)
     stream = data["streams"][0]
@@ -129,7 +176,7 @@ def get_video_info(video_path: str | Path) -> dict:
 
 def _has_audio_stream(video_path: str | Path) -> bool:
     """Return whether FFprobe can find at least one audio stream."""
-    result = subprocess.run(
+    result = _run_media_command(
         [
             "ffprobe",
             "-v",
@@ -142,10 +189,10 @@ def _has_audio_stream(video_path: str | Path) -> bool:
             "csv=p=0",
             str(video_path),
         ],
-        capture_output=True,
-        text=True,
+        operation="FFprobe audio stream inspection",
+        timeout=FFPROBE_TIMEOUT_SECONDS,
     )
-    return result.returncode == 0 and bool(result.stdout.strip())
+    return bool(result.stdout.strip())
 
 
 def read_wav_samples(wav_path: str | Path) -> np.ndarray:
